@@ -27,6 +27,26 @@
 #ifndef _LPRF_H_
 #define _LPRF_H_
 
+#define LPRF_DEBUG  // Remove comment to show debug outputs
+
+
+
+#undef PRINT_DEBUG
+#ifdef LPRF_DEBUG
+	#define PRINT_DEBUG(fmt, args...) printk( KERN_DEBUG "lprf: " fmt, ## args)
+#else
+	#define PRINT_DEBUG(fmt, args...) /* not debugging: nothing */
+#endif
+
+
+
+
+
+
+
+
+
+
 
 
 #endif // _LPRF_H_

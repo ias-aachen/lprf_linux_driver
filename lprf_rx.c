@@ -41,3 +41,22 @@
 #include <net/cfg802154.h>
 
 #include "lprf.h"
+
+
+MODULE_DESCRIPTION("LPRF RX Driver");
+MODULE_LICENSE("GPL v2");
+
+
+static int hello_init(void)
+{
+	PRINT_DEBUG("Call init function\n");
+	return 0;
+}
+
+static void hello_exit(void)
+{
+	PRINT_DEBUG("Call exit function\n");
+}
+
+module_init(hello_init);
+module_exit(hello_exit);
