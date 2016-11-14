@@ -48,15 +48,27 @@ struct lprf_platform_data {
 	int some_custom_value;
 };
 
+static const struct regmap_config lprf_regmap_spi_config = {
+	.reg_bits = 16,
+	.reg_stride = 1,
+	.pad_bits = 0,
+	.val_bits = 8,
+	.fast_io = 0, // use mutex or spinlock for locking
+	.read_flag_mask = 0x80,
+	.write_flag_mask = 0xc0,
+	.use_single_rw = 1, // single read write commands or bulk read write
+	.can_multi_write = 0,
+	.cache_type = REGCACHE_NONE,
+};
 
 static int lprf_probe(struct spi_device *spi)
 {
 	u32 custom_value = 0;
 	int ret = 0;
 	struct lprf_platform_data *pdata = 0;
-	uint8_t *tx_buf = 0;
-	uint8_t *rx_buf = 0;
-	uint8_t chip_id_h = 0;
+	struct regmap *lprf_regmap;
+	unsigned int *rx_buf = 0;
+	uint8_t chip_id_L = 0, chip_id_H = 0;
 	PRINT_DEBUG( "call lprf_probe\n");
 
 
@@ -74,25 +86,26 @@ static int lprf_probe(struct spi_device *spi)
 	ret = of_property_read_u32(spi->dev.of_node, "some-custom-value", &custom_value);
 	PRINT_DEBUG( "returned value:\t%d, custom value:\t%d\n", ret, custom_value);
 
-	rx_buf = kmalloc(1, GFP_KERNEL);
-	tx_buf = kmalloc(2, GFP_KERNEL);
 
-	rx_buf[0] = 0;
 
-	tx_buf[0] = 0x80;
-	tx_buf[1] = RG_CHIP_ID_H;
 
-	spi_write_then_read(spi, tx_buf, 2, rx_buf, 1);
 
-	chip_id_h = rx_buf[0];
-	tx_buf[1] = RG_CHIP_ID_L;
+	lprf_regmap = devm_regmap_init_spi(spi, &lprf_regmap_spi_config);
+	if (IS_ERR(lprf_regmap)) {
+		PRINT_DEBUG( "Failed to allocate register map: %d\n", (int) PTR_ERR(lprf_regmap) );
+	}
 
-	spi_write_then_read(spi, tx_buf, 2, rx_buf, 1);
+	PRINT_DEBUG( "successfully initialized Register map\n");
 
-	PRINT_DEBUG( "LPRF Chip found with chip ID %x\n", (chip_id_h << 8) + rx_buf[0]);
+	rx_buf = kmalloc(sizeof(*rx_buf), GFP_KERNEL);
+	ret = regmap_read(lprf_regmap, RG_CHIP_ID_H, rx_buf);
+	chip_id_H = (uint8_t) *rx_buf;
+	ret = regmap_read(lprf_regmap, RG_CHIP_ID_L, rx_buf);
+	chip_id_L = (uint8_t) *rx_buf;
+	PRINT_DEBUG( "LPRF Chip found with Chip ID %X\n", (chip_id_H << 8) + chip_id_L);
 
 	kfree(rx_buf);
-	kfree(tx_buf);
+
 	return 0;
 }
 
