@@ -258,6 +258,8 @@ static int lprf_probe(struct spi_device *spi)
 
 
 	lprf = kmalloc(sizeof(*lprf), GFP_KERNEL);
+	if (lprf == 0)
+		return -ENOMEM;
 	lprf->spi_device = spi;
 
 	lprf->regmap = devm_regmap_init_spi(spi, &lprf_regmap_spi_config);
