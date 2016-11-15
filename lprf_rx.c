@@ -127,6 +127,113 @@ static int lprf_detect_device(struct lprf *lprf)
 
 }
 
+static int init_lprf_hardware(struct lprf *lprf)
+{
+	// todo evaluate return values
+
+	// Global Reset
+	lprf_write_register(lprf, RG_GLOBAL_RESETB, 0xFF);
+	lprf_write_register(lprf, RG_GLOBAL_RESETB, 0x00);
+	lprf_write_register(lprf, RG_GLOBAL_RESETB, 0xFF);
+
+	lprf_write_register(lprf, RG_GLOBAL_initALL, 0xFF); // Load Init Values
+
+	lprf_write_subreg(lprf, SR_SM_EN, 0);          // Disable State machine
+
+	// Set external Clock
+	lprf_write_subreg(lprf, SR_CTRL_CLK_CDE_OSC, 0);
+	lprf_write_subreg(lprf, SR_CTRL_CLK_CDE_PAD, 1);
+	lprf_write_subreg(lprf, SR_CTRL_CLK_DIG_OSC, 0);
+	lprf_write_subreg(lprf, SR_CTRL_CLK_DIG_PAD, 1);
+	lprf_write_subreg(lprf, SR_CTRL_CLK_PLL_OSC, 0);
+	lprf_write_subreg(lprf, SR_CTRL_CLK_PLL_PAD, 1);
+	lprf_write_subreg(lprf, SR_CTRL_CLK_C3X_OSC, 0);
+	lprf_write_subreg(lprf, SR_CTRL_CLK_C3X_PAD, 1);
+	lprf_write_subreg(lprf, SR_CTRL_CLK_FALLB, 0);
+
+	// activate 2.4GHz Band
+	lprf_write_subreg(lprf, SR_RX_FE_EN, 1);            //enable RX frontend
+	lprf_write_subreg(lprf, SR_RX_RF_MODE, 0);          //set band to 2.4GHz
+	lprf_write_subreg(lprf, SR_RX_LO_EXT, 1);           //set to external LO
+	lprf_write_subreg(lprf, SR_RX24_PON, 1);            //power on RX24 frontend
+	lprf_write_subreg(lprf, SR_RX800_PON, 0);           //power off RX800 frontend
+	lprf_write_subreg(lprf, SR_RX433_PON, 0);           //power on RX433 frontend
+	//lprf_write_subreg(lprf, SR_LNA24_CTRIM, 255);
+	lprf_write_subreg(lprf, SR_PPF_TRIM, 5);
+
+	lprf_write_subreg(lprf, SR_PPF_HGAIN, 1);           //magic Polyphase filter settings
+	lprf_write_subreg(lprf, SR_PPF_LLIF, 0);            //magic Polyphase filter settings
+	lprf_write_subreg(lprf, SR_LNA24_ISETT, 7);         //ioSetReg('LNA24_ISETT','07');  max current for (wakeup?) 2.4GHz LNA
+	lprf_write_subreg(lprf, SR_LNA24_SPCTRIM, 15);
+
+	// ADC_CLK
+	lprf_write_subreg(lprf, SR_CTRL_CDE_ENABLE, 0);
+	lprf_write_subreg(lprf, SR_CTRL_C3X_ENABLE, 1);
+	lprf_write_subreg(lprf, SR_CTRL_CLK_ADC, 1);  // Activate Clock tripler
+	lprf_write_subreg(lprf, SR_CTRL_C3X_LTUNE, 1);
+
+
+	lprf_write_subreg(lprf, SR_CTRL_ADC_MULTIBIT, 0); // Set single bit mode for ADC
+	//lprf_write_subreg(lprf, SR_ADC_D_EN, 1);
+	lprf_write_subreg(lprf, SR_CTRL_ADC_ENABLE, 1);   // Activate ADC
+
+	lprf_write_subreg(lprf, SR_LDO_A, 1);           //Enable LDOs
+	lprf_write_subreg(lprf, SR_LDO_A_VOUT, 0x11);     //configure LDOs
+
+	lprf_write_subreg(lprf, SR_LDO_D_VOUT, 0x12);     //configure LDOs
+
+	// initial gain settings
+	lprf_write_subreg(lprf, SR_DEM_GC1, 0);
+	lprf_write_subreg(lprf, SR_DEM_GC2, 0);
+	lprf_write_subreg(lprf, SR_DEM_GC3, 1);
+	lprf_write_subreg(lprf, SR_DEM_GC4, 0);
+	lprf_write_subreg(lprf, SR_DEM_GC5, 0);
+	lprf_write_subreg(lprf, SR_DEM_GC6, 1);
+	lprf_write_subreg(lprf, SR_DEM_GC7, 4);
+
+
+	lprf_write_subreg(lprf, SR_DEM_CLK96_SEL, 1);
+	lprf_write_subreg(lprf, SR_DEM_PD_EN, 1); // needs to be enabled if fifo is used
+	lprf_write_subreg(lprf, SR_DEM_AGC_EN, 1);
+	lprf_write_subreg(lprf, SR_DEM_FREQ_OFFSET_CAL_EN, 0);
+	lprf_write_subreg(lprf, SR_DEM_OSR_SEL, 0);
+	lprf_write_subreg(lprf, SR_DEM_BTLE_MODE, 1);
+
+	lprf_write_subreg(lprf, SR_DEM_IF_SEL, 2);
+	lprf_write_subreg(lprf, SR_DEM_DATA_RATE_SEL, 3);
+
+	lprf_write_subreg(lprf, SR_PPF_M0, 0);
+	lprf_write_subreg(lprf, SR_PPF_M1, 0);
+	lprf_write_subreg(lprf, SR_PPF_TRIM, 0);
+	lprf_write_subreg(lprf, SR_PPF_HGAIN, 1);
+	lprf_write_subreg(lprf, SR_PPF_LLIF, 0);
+
+	lprf_write_subreg(lprf, SR_CTRL_ADC_BW_SEL, 1);
+	lprf_write_subreg(lprf, SR_CTRL_ADC_BW_TUNE, 4);
+	lprf_write_subreg(lprf, SR_CTRL_ADC_DR_SEL, 2);
+	//lprf_write_subreg(lprf, SR_CTRL_ADC_DWA, 1);
+
+
+	lprf_write_subreg(lprf, SR_DEM_IQ_CROSS, 1);
+	lprf_write_subreg(lprf, SR_DEM_IQ_INV, 0);
+
+	//lprf_write_subreg(lprf, SR_CTRL_C3X_LTUNE, 0);
+	//lprf_write_subreg(lprf, SR_INVERT_FIFO_CLK, 0);  // Only works with statemachine
+
+	//activate_external_96MHz_clock();
+	//manual_gain_settings();
+
+	//manual_PLL_configuration();
+
+
+	// start demodulation
+	lprf_write_subreg(lprf, SR_DEM_RESETB, 0);
+	lprf_write_subreg(lprf, SR_DEM_RESETB, 1);
+	lprf_write_subreg(lprf, SR_DEM_EN, 1);
+
+	return 0;
+}
+
 static int lprf_probe(struct spi_device *spi)
 {
 	u32 custom_value = 0;
@@ -161,6 +268,10 @@ static int lprf_probe(struct spi_device *spi)
 	PRINT_DEBUG( "successfully initialized Register map\n");
 
 	ret = lprf_detect_device(lprf);
+	if(ret)
+		goto free_device;
+
+	ret = init_lprf_hardware(lprf);
 	if(ret)
 		goto free_device;
 
