@@ -61,16 +61,79 @@ static const struct regmap_config lprf_regmap_spi_config = {
 	.cache_type = REGCACHE_NONE,
 };
 
+static inline int lprf_read_register(struct lprf *lprf, unsigned int address, unsigned int *value)
+{
+	int ret = 0;
+	ret = regmap_read(lprf->regmap, address, value);
+	PRINT_DEBUG( "Read value %X from LPRF register %X\n", *value, address);
+	return ret;
+}
+
+static inline int lprf_write_register(struct lprf *lprf, unsigned int address, unsigned int value)
+{
+	int ret = 0;
+	ret = regmap_write(lprf->regmap, address, value);
+	PRINT_DEBUG( "Write value %X to LPRF register %X\n", value, address);
+	return ret;
+}
+
+static inline int lprf_read_subreg(struct lprf *lprf,
+		unsigned int addr, unsigned int mask,
+		unsigned int shift, unsigned int *data)
+{
+	int ret = 0;
+	ret = lprf_read_register(lprf, addr, data);
+	if (ret)
+		*data = (*data & mask) >> shift;
+	return ret;
+}
+
+static inline int lprf_write_subreg(struct lprf *lprf,
+		unsigned int addr, unsigned int mask,
+		unsigned int shift, unsigned int data)
+{
+	return regmap_update_bits(lprf->regmap, addr, mask, data << shift);
+}
+
+
+/**
+ * Detect LPRF Chip
+ *
+ * @lprf: lprf struct containing hardware information of lprf chip
+ *
+ * returns 0 on success, a negative error number on error.
+ */
+static int lprf_detect_device(struct lprf *lprf)
+{
+	int rx_buf = 0, ret=0, chip_id = 0;
+
+	ret = lprf_read_register(lprf, RG_CHIP_ID_H, &rx_buf);
+	if(ret)
+		return ret;
+	chip_id |= (rx_buf << 8);
+
+	ret = lprf_read_register(lprf, RG_CHIP_ID_L, &rx_buf);
+	if(ret)
+		return ret;
+	chip_id |= rx_buf;
+
+	if (chip_id != 0x1a51)
+	{
+		PRINT_DEBUG("Chip with invalid Chip ID %X found\n", chip_id);
+		return -ENODEV;
+	}
+	PRINT_INFO("LPRF Chip found with Chip ID %X\n", chip_id);
+	return 0;
+
+}
+
 static int lprf_probe(struct spi_device *spi)
 {
 	u32 custom_value = 0;
 	int ret = 0;
 	struct lprf_platform_data *pdata = 0;
-	struct regmap *lprf_regmap;
-	unsigned int *rx_buf = 0;
-	uint8_t chip_id_L = 0, chip_id_H = 0;
+	struct lprf *lprf;
 	PRINT_DEBUG( "call lprf_probe\n");
-
 
 	pdata = spi->dev.platform_data;
 
@@ -87,26 +150,24 @@ static int lprf_probe(struct spi_device *spi)
 	PRINT_DEBUG( "returned value:\t%d, custom value:\t%d\n", ret, custom_value);
 
 
+	lprf = kmalloc(sizeof(*lprf), GFP_KERNEL);
+	lprf->spi_device = spi;
 
-
-
-	lprf_regmap = devm_regmap_init_spi(spi, &lprf_regmap_spi_config);
-	if (IS_ERR(lprf_regmap)) {
-		PRINT_DEBUG( "Failed to allocate register map: %d\n", (int) PTR_ERR(lprf_regmap) );
+	lprf->regmap = devm_regmap_init_spi(spi, &lprf_regmap_spi_config);
+	if (IS_ERR(lprf->regmap)) {
+		PRINT_DEBUG( "Failed to allocate register map: %d\n", (int) PTR_ERR(lprf->regmap) );
 	}
 
 	PRINT_DEBUG( "successfully initialized Register map\n");
 
-	rx_buf = kmalloc(sizeof(*rx_buf), GFP_KERNEL);
-	ret = regmap_read(lprf_regmap, RG_CHIP_ID_H, rx_buf);
-	chip_id_H = (uint8_t) *rx_buf;
-	ret = regmap_read(lprf_regmap, RG_CHIP_ID_L, rx_buf);
-	chip_id_L = (uint8_t) *rx_buf;
-	PRINT_DEBUG( "LPRF Chip found with Chip ID %X\n", (chip_id_H << 8) + chip_id_L);
+	ret = lprf_detect_device(lprf);
+	if(ret)
+		goto free_device;
 
-	kfree(rx_buf);
+free_device:
+	kfree(lprf);
 
-	return 0;
+	return ret;
 }
 
 static int lprf_remove(struct spi_device *spi)

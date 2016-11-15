@@ -28,6 +28,7 @@
 #define _LPRF_H_
 
 #define LPRF_DEBUG  // Remove comment to show debug outputs
+#define LPRF_INFO  // Remove comment to show info outputs
 
 
 
@@ -35,7 +36,14 @@
 #ifdef LPRF_DEBUG
 	#define PRINT_DEBUG(fmt, args...) printk( KERN_DEBUG "lprf: " fmt, ## args)
 #else
-	#define PRINT_DEBUG(fmt, args...) /* not debugging: nothing */
+	#define PRINT_DEBUG(fmt, args...)
+#endif
+
+#undef PRINT_INFO
+#ifdef LPRF_INFO
+	#define PRINT_INFO(fmt, args...) printk( KERN_INFO "lprf: " fmt, ## args)
+#else
+	#define PRINT_INFO(fmt, args...)
 #endif
 
 
@@ -44,7 +52,10 @@
 
 
 
-
+struct lprf {
+	struct spi_device *spi_device;
+	struct regmap *regmap;
+};
 
 
 
