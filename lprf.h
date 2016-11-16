@@ -29,19 +29,19 @@
 
 #define LPRF_DEBUG  // Remove comment to show debug outputs
 #define LPRF_INFO  // Remove comment to show info outputs
-
+#define LPRF_MAX_BUF 256
 
 
 #undef PRINT_DEBUG
 #ifdef LPRF_DEBUG
-	#define PRINT_DEBUG(fmt, args...) printk( KERN_DEBUG "lprf: " fmt, ## args)
+	#define PRINT_DEBUG(fmt, args...) printk( KERN_DEBUG "lprf: " fmt "\n", ## args)
 #else
 	#define PRINT_DEBUG(fmt, args...)
 #endif
 
 #undef PRINT_INFO
 #ifdef LPRF_INFO
-	#define PRINT_INFO(fmt, args...) printk( KERN_INFO "lprf: " fmt, ## args)
+	#define PRINT_INFO(fmt, args...) printk( KERN_INFO "lprf: " fmt "\n", ## args)
 #else
 	#define PRINT_INFO(fmt, args...)
 #endif
@@ -55,9 +55,11 @@
 struct lprf {
 	struct spi_device *spi_device;
 	struct regmap *regmap;
+	struct mutex mutex;
+	struct cdev my_char_dev;
+	struct spi_message spi_message;
+	DECLARE_KFIFO_PTR(spi_buffer, uint8_t);
 };
-
-
 
 
 #endif // _LPRF_H_

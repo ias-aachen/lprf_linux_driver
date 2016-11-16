@@ -29,19 +29,28 @@
  */
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/gpio.h>
+#include <linux/fs.h>
+#include <linux/cdev.h>
 #include <linux/delay.h>
 #include <linux/spi/spi.h>
 #include <linux/regmap.h>
 #include <linux/of_gpio.h>
 #include <linux/ieee802154.h>
 #include <linux/debugfs.h>
+#include <linux/kfifo.h>
 
 #include <net/mac802154.h>
 #include <net/cfg802154.h>
 
 #include "lprf.h"
 #include "lprf_registers.h"
+
+
+static int init_lprf_hardware(struct lprf *lprf);
+static inline int __lprf_read_frame(struct lprf *lprf);
+
 
 
 struct lprf_platform_data {
@@ -61,11 +70,13 @@ static const struct regmap_config lprf_regmap_spi_config = {
 	.cache_type = REGCACHE_NONE,
 };
 
+static struct lprf lprf_global;  // todo: Does it have to be global?
+
 static inline int lprf_read_register(struct lprf *lprf, unsigned int address, unsigned int *value)
 {
 	int ret = 0;
 	ret = regmap_read(lprf->regmap, address, value);
-	PRINT_DEBUG( "Read value %X from LPRF register %X\n", *value, address);
+	// PRINT_DEBUG( "Read value %X from LPRF register %X", *value, address);
 	return ret;
 }
 
@@ -73,7 +84,7 @@ static inline int lprf_write_register(struct lprf *lprf, unsigned int address, u
 {
 	int ret = 0;
 	ret = regmap_write(lprf->regmap, address, value);
-	PRINT_DEBUG( "Write value %X to LPRF register %X\n", value, address);
+	// PRINT_DEBUG( "Write value %X to LPRF register %X", value, address);
 	return ret;
 }
 
@@ -83,8 +94,7 @@ static inline int lprf_read_subreg(struct lprf *lprf,
 {
 	int ret = 0;
 	ret = lprf_read_register(lprf, addr, data);
-	if (ret)
-		*data = (*data & mask) >> shift;
+	*data = (*data & mask) >> shift;
 	return ret;
 }
 
@@ -93,6 +103,205 @@ static inline int lprf_write_subreg(struct lprf *lprf,
 		unsigned int shift, unsigned int data)
 {
 	return regmap_update_bits(lprf->regmap, addr, mask, data << shift);
+}
+
+static void __lprf_read_frame_complete(void *context)
+{
+	struct lprf *lprf = 0;
+	struct spi_transfer *transfer = 0;
+	uint8_t *rx_buf = 0;
+	uint8_t *tx_buf = 0;
+	uint8_t status = 0;
+	int length = 0;
+	int bytes_copied = 0;
+
+	PRINT_DEBUG("Spi transfer completed");
+
+	lprf = context;
+	transfer = list_entry(lprf->spi_message.transfers.next, struct spi_transfer, transfer_list);
+	rx_buf = (uint8_t*) transfer->rx_buf;
+	tx_buf = (uint8_t*) transfer->tx_buf;
+
+	status = rx_buf[0];
+	length = rx_buf[1];
+
+	// do not copy first two bytes that contain status and length information
+	bytes_copied = kfifo_in(&lprf->spi_buffer, &rx_buf[2], length);
+
+	PRINT_DEBUG("Copied %d bytes of %d received bytes to ring buffer", bytes_copied, length);
+
+	if (length > 0) // LPRF FIFO not empty -> get more data
+	{
+		// note that buffers get reused without deleting old data
+		__lprf_read_frame(lprf);
+		return;
+	}
+
+	spi_transfer_del(transfer);
+	kfree(rx_buf);
+	kfree(tx_buf);
+	kfree(transfer);
+
+}
+
+/**
+ * Execute one Frame Read Access Command on LPRF-Chip
+ *
+ * @lprf: lprf structure with hardware information
+ *
+ * @rx_buf: dynamically allocated buffer for the received data. Make sure that rx_buf is at least
+ * LPRF_MAX_BUF + 2 (258 bytes) long (maximum number of received bytes per read access)
+ *
+ * @tx_buf: dynamically allocated buffer for transmitted data. Has to be the same length as rx_buf.
+ *
+ * returns zero on success or negative error code. Note that the freeing of the rx and tx buffers
+ * is taken care of by __lprf_read_frame_complete().
+ */
+static inline int __lprf_read_frame(struct lprf *lprf)
+{
+	uint8_t *tx_buf = 0;
+	tx_buf = (uint8_t*) list_entry(lprf->spi_message.transfers.next, struct spi_transfer, transfer_list)->tx_buf;
+
+	tx_buf[0] = 0x20;  // Frame_Read_commmand
+
+	PRINT_DEBUG("Do Frame Read");
+
+	return spi_async(lprf->spi_device, &lprf->spi_message);
+}
+
+static int read_lprf_fifo(struct lprf *lprf)
+{
+	uint8_t *rx_buf = 0;
+	uint8_t *tx_buf = 0;
+	struct spi_transfer *transfer = 0;
+
+	// Freeing memory is taken care of by __lprf_read_frame_complete
+	rx_buf = kzalloc(LPRF_MAX_BUF + 2, GFP_KERNEL);
+	if (rx_buf == 0)
+		return -ENOMEM;
+
+	tx_buf = kzalloc(LPRF_MAX_BUF + 2, GFP_KERNEL);
+	if (tx_buf == 0)
+		goto free_rx_buf;
+
+	transfer = kzalloc(sizeof(*transfer), GFP_KERNEL);
+	if (transfer == 0)
+		goto free_tx_buf;
+
+	// todo better to do this spi message initialization once in the probe function
+	spi_message_init(&lprf->spi_message);
+	lprf->spi_message.complete = __lprf_read_frame_complete;
+	lprf->spi_message.context = lprf;
+	lprf->spi_message.spi = lprf->spi_device;
+
+	transfer->rx_buf = rx_buf;
+	transfer->tx_buf = tx_buf;
+	transfer->len = LPRF_MAX_BUF + 2;
+	spi_message_add_tail(transfer, &lprf->spi_message);
+
+	__lprf_read_frame(lprf);
+	return 0;
+
+	PRINT_DEBUG("Error during memory allocation in read_lprf_fifo");
+free_tx_buf:
+	kfree(tx_buf);
+free_rx_buf:
+	kfree(rx_buf);
+
+	return -ENOMEM;
+}
+
+int lprf_open_char_device(struct inode *inode, struct file *filp)
+{
+	struct lprf *lprf;
+	int ret = 0;
+//	int i = 0;
+	lprf = container_of(inode->i_cdev, struct lprf, my_char_dev);    //http://stackoverflow.com/questions/15832301/understanding-container-of-macro-in-linux-kerne0;
+	ret = mutex_lock_interruptible(&lprf->mutex);
+	if(ret)
+	{
+		PRINT_DEBUG("LPRF locked, locking failed");
+		return ret;
+	}
+	filp->private_data = lprf;
+
+	PRINT_DEBUG("LPRF successfully opened as char device");
+	return 0;
+
+//unlock_mutex:
+//	mutex_unlock(&lprf->mutex);
+//	return ret;
+}
+
+
+int lprf_release_char_device(struct inode *inode, struct file *filp)
+{
+	struct lprf *lprf;
+	lprf = container_of(inode->i_cdev, struct lprf, my_char_dev);
+
+
+	mutex_unlock(&lprf->mutex);
+
+	PRINT_DEBUG("LPRF char device successfully released");
+	return 0;
+}
+
+ssize_t lprf_read_char_device(struct file *filp, char __user *buf, size_t count, loff_t *f_pos)
+{
+	int buffer_length = 0;
+	int bytes_to_copy = 0;
+	int bytes_copied = 0;
+	int ret = 0;
+	struct lprf *lprf = filp->private_data;
+
+	PRINT_DEBUG("Read from user space with buffer size %d requested", count);
+
+	buffer_length = kfifo_len(&lprf->spi_buffer);
+	bytes_to_copy = (count < buffer_length) ? count : buffer_length;
+
+	ret = kfifo_to_user(&lprf->spi_buffer, buf, bytes_to_copy, &bytes_copied);
+	if(ret)
+		return ret;
+
+	PRINT_DEBUG("%d/%d bytes copied to user.",
+			bytes_copied, buffer_length);
+
+	return bytes_copied;
+}
+
+
+static int allocate_ring_buffer_and_receive_data(struct lprf *lprf)
+{
+	int ret = 0;
+	int i  = 0;
+
+	ret = kfifo_alloc(&lprf->spi_buffer, 2048, GFP_KERNEL);
+	if (ret)
+		return ret;
+
+	//lprf_write_subreg(lprf, SR_SM_COMMAND, STATE_CMD_RX);   //change state to RX
+
+	for (i = 0; i < 10000; ++i)
+	{
+		int PD;
+		lprf_read_subreg(lprf, SR_DEM_PD_OUT, &PD);
+		if (PD != 0)
+		{
+			PRINT_DEBUG("Preamble Detected after %d SPI reads", i);
+			break;
+		}
+	}
+
+	mdelay(100);  // todo just for testing, remove later
+	lprf_write_subreg(lprf, SR_DEM_EN, 0);
+	PRINT_DEBUG("Demodulation disabled after 0.1 seconds");
+
+	ret = read_lprf_fifo(lprf);
+	if (ret)
+		return ret;
+
+	PRINT_DEBUG("Receive Data successfully called");
+	return 0;
 }
 
 
@@ -119,13 +328,58 @@ static int lprf_detect_device(struct lprf *lprf)
 
 	if (chip_id != 0x1a51)
 	{
-		PRINT_DEBUG("Chip with invalid Chip ID %X found\n", chip_id);
+		PRINT_DEBUG("Chip with invalid Chip ID %X found", chip_id);
 		return -ENODEV;
 	}
-	PRINT_INFO("LPRF Chip found with Chip ID %X\n", chip_id);
+	PRINT_INFO("LPRF Chip found with Chip ID %X", chip_id);
 	return 0;
 
 }
+
+/**
+ * Defines the callback functions for file operations when the lprf device is used
+ * with the char driver interface
+ */
+static const struct file_operations lprf_fops = {
+	.owner =             THIS_MODULE,
+	.read =              lprf_read_char_device,
+	.write =             0, //  needs to be implemented for tx case
+	.unlocked_ioctl =    0, // can be implemented for additional control
+	.open =              lprf_open_char_device,
+	.release =           lprf_release_char_device,
+};
+
+/**
+ * Registers the LPRF-Chip as char-device. Make sure to execute this function only
+ * after the chip has been fully initialized and is ready to use.
+ */
+static int register_char_device(struct lprf *lprf)
+{
+	int ret = 0;
+	dev_t dev_number = 0;
+
+	ret = alloc_chrdev_region(&dev_number, 0, 1, "lprf_rx");
+	if (ret)
+	{
+		PRINT_DEBUG("Dynamic Device number allocation failed");
+		return ret;
+	}
+
+	cdev_init(&lprf->my_char_dev, &lprf_fops);
+	lprf->my_char_dev.owner = THIS_MODULE;
+	ret = cdev_add (&lprf->my_char_dev, dev_number, 1);
+	if (ret)
+	{
+		goto unregister;
+	}
+	PRINT_DEBUG("Successfully added char driver to system");
+	return ret;
+
+unregister:
+	unregister_chrdev_region(dev_number, 1);
+	return ret;
+}
+
 
 static int init_lprf_hardware(struct lprf *lprf)
 {
@@ -231,6 +485,20 @@ static int init_lprf_hardware(struct lprf *lprf)
 	lprf_write_subreg(lprf, SR_DEM_RESETB, 1);
 	lprf_write_subreg(lprf, SR_DEM_EN, 1);
 
+
+
+//	lprf_write_subreg(lprf, SR_SM_EN, 1);               //enable state machine
+//	lprf_write_subreg(lprf, SR_FIFO_MODE_EN, 1);        //enable FIFO mode
+//	lprf_write_subreg(lprf, SR_DIRECT_TX, 0);           //disable transition to TX
+//	lprf_write_subreg(lprf, SR_DIRECT_TX_IDLE, 0);      //do not transition to TX based on packet counter or fifo full
+//	lprf_write_subreg(lprf, SR_RX_HOLD_MODE_EN, 0);     //do not transition to RX_HOLD based on packet counter or fifo full
+//	lprf_write_subreg(lprf, SR_RX_TIMEOUT_EN, 0);       //disable RX_TIMEOUT counter
+//	lprf_write_subreg(lprf, SR_RX_HOLD_ON_TIMEOUT, 0);  //disable transition RX -> RX_HOLD based on timeout counter
+//	lprf_write_subreg(lprf, SR_AGC_AUTO_GAIN, 0);       //disable LNA gain switching based on RSSI
+//	lprf_write_subreg(lprf, SR_RX_LENGTH_H, 127);
+//	lprf_write_subreg(lprf, SR_RX_LENGTH_M, 255);    //set RX_LENGTH to maximum
+//	lprf_write_subreg(lprf, SR_RX_LENGTH_L, 255);
+
 	return 0;
 }
 
@@ -239,8 +507,8 @@ static int lprf_probe(struct spi_device *spi)
 	u32 custom_value = 0;
 	int ret = 0;
 	struct lprf_platform_data *pdata = 0;
-	struct lprf *lprf;
-	PRINT_DEBUG( "call lprf_probe\n");
+	struct lprf *lprf = &lprf_global;
+	PRINT_DEBUG( "call lprf_probe");
 
 	pdata = spi->dev.platform_data;
 
@@ -250,24 +518,23 @@ static int lprf_probe(struct spi_device *spi)
 			return -ENOENT;
 	}
 
-	PRINT_DEBUG( "successfully parsed platform data\n");
+	PRINT_DEBUG( "successfully parsed platform data");
 
 
 	ret = of_property_read_u32(spi->dev.of_node, "some-custom-value", &custom_value);
-	PRINT_DEBUG( "returned value:\t%d, custom value:\t%d\n", ret, custom_value);
+	PRINT_DEBUG( "returned value:\t%d, custom value:\t%d", ret, custom_value);
 
 
-	lprf = kmalloc(sizeof(*lprf), GFP_KERNEL);
-	if (lprf == 0)
-		return -ENOMEM;
 	lprf->spi_device = spi;
+	mutex_init(&lprf->mutex);
+	mutex_lock(&lprf->mutex);
 
 	lprf->regmap = devm_regmap_init_spi(spi, &lprf_regmap_spi_config);
 	if (IS_ERR(lprf->regmap)) {
-		PRINT_DEBUG( "Failed to allocate register map: %d\n", (int) PTR_ERR(lprf->regmap) );
+		PRINT_DEBUG( "Failed to allocate register map: %d", (int) PTR_ERR(lprf->regmap) );
 	}
 
-	PRINT_DEBUG( "successfully initialized Register map\n");
+	PRINT_DEBUG( "successfully initialized Register map");
 
 	ret = lprf_detect_device(lprf);
 	if(ret)
@@ -277,15 +544,29 @@ static int lprf_probe(struct spi_device *spi)
 	if(ret)
 		goto free_device;
 
+	allocate_ring_buffer_and_receive_data(lprf);
+
+	ret = register_char_device(lprf);
+	if(ret)
+		goto free_device;
+
+	// if code is added here make sure to unregister char device on error case.
+
 free_device:
-	kfree(lprf);
+
+	mutex_unlock(&lprf->mutex);
 
 	return ret;
 }
 
 static int lprf_remove(struct spi_device *spi)
 {
-	PRINT_DEBUG( "call lprf_remove\n");
+	dev_t dev_number = lprf_global.my_char_dev.dev;
+
+	kfifo_free(&lprf_global.spi_buffer);
+	cdev_del(&lprf_global.my_char_dev);  // todo: is it possible to not directly access the global structure
+	unregister_chrdev_region(dev_number, 1);
+	PRINT_DEBUG( "Removed Char Device");
 	return 0;
 }
 
