@@ -15,3 +15,5 @@ lsmod
 major=$(awk "\$2==\"lprf_rx\" {print \$1}" /proc/devices)
 sudo rm -f /dev/lprf
 sudo mknod /dev/lprf c $major 0
+xxd /dev/lprf
+xxd -b /dev/lprf
