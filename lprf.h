@@ -59,6 +59,7 @@ struct lprf {
 	struct cdev my_char_dev;
 	struct spi_message spi_message;
 	DECLARE_KFIFO_PTR(spi_buffer, uint8_t);
+	struct ieee802154_hw *ieee802154_hw;
 };
 
 

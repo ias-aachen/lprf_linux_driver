@@ -51,6 +51,14 @@
 static int init_lprf_hardware(struct lprf *lprf);
 static inline int __lprf_read_frame(struct lprf *lprf);
 
+static int lprf_start_ieee802154(struct ieee802154_hw *hw);
+static void lprf_stop_ieee802154(struct ieee802154_hw *hw);
+static int lprf_set_ieee802154_channel(struct ieee802154_hw *hw, u8 page, u8 channel);
+static int lprf_set_ieee802154_addr_filter(struct ieee802154_hw *hw,
+		    struct ieee802154_hw_addr_filt *filt,
+		    unsigned long changed);
+static int lprf_xmit_ieee802154_async(struct ieee802154_hw *hw, struct sk_buff *skb);
+static int lprf_ieee802154_energy_detection(struct ieee802154_hw *hw, u8 *level);
 
 
 struct lprf_platform_data {
@@ -68,6 +76,24 @@ static const struct regmap_config lprf_regmap_spi_config = {
 	.use_single_rw = 1, // single read write commands or bulk read write
 	.can_multi_write = 0,
 	.cache_type = REGCACHE_NONE,
+};
+
+static const struct ieee802154_ops  ieee802154_lprf_callbacks = {
+	.owner = THIS_MODULE,
+	.start = lprf_start_ieee802154,
+	.stop = lprf_stop_ieee802154,
+	.xmit_sync = 0, // should not be used anymore
+	.xmit_async = lprf_xmit_ieee802154_async, // needs to be implemented for Tx
+	.ed = lprf_ieee802154_energy_detection, // can we support this? Can not be disabled in hw_flags
+	.set_channel = lprf_set_ieee802154_channel,
+	.set_hw_addr_filt = lprf_set_ieee802154_addr_filter,
+	.set_txpower = 0,	// needs to be implemented for tx (seems to work without)
+	.set_lbt = 0,		// Disabled in hw_flags
+	.set_cca_mode = 0,	// can we support this? Can not be disabled in hw_flags (seems to work without)
+	.set_cca_ed_level = 0,	// can we support this? Can not be disabled in hw_flags (seems to work without)
+	.set_csma_params = 0,	// Disabled in hw_flags
+	.set_frame_retries = 0,	// Disabled in hw_flags
+	.set_promiscuous_mode = 0, // Disabled in hw_flags
 };
 
 static inline int lprf_read_register(struct lprf *lprf, unsigned int address, unsigned int *value)
@@ -209,26 +235,53 @@ free_rx_buf:
 	return -ENOMEM;
 }
 
+
+static int lprf_start_ieee802154(struct ieee802154_hw *hw)
+{
+	return 0;
+}
+
+static void lprf_stop_ieee802154(struct ieee802154_hw *hw)
+{
+
+}
+
+static int lprf_set_ieee802154_channel(struct ieee802154_hw *hw, u8 page, u8 channel)
+{
+	return 0;
+}
+
+static int lprf_set_ieee802154_addr_filter(struct ieee802154_hw *hw,
+		    struct ieee802154_hw_addr_filt *filt,
+		    unsigned long changed)
+{
+	return 0;
+}
+
+static int lprf_xmit_ieee802154_async(struct ieee802154_hw *hw, struct sk_buff *skb)
+{
+	PRINT_DEBUG("Called unimplemented function lprf_xmit_ieee802154_async()");
+	return 0;
+}
+
+static int lprf_ieee802154_energy_detection(struct ieee802154_hw *hw, u8 *level)
+{
+	PRINT_DEBUG("Called unimplemented function lprf_ieee802154_energy_detection()");
+	return 0;
+}
+
+
 int lprf_open_char_device(struct inode *inode, struct file *filp)
 {
 	struct lprf *lprf;
-	int ret = 0;
-//	int i = 0;
 	lprf = container_of(inode->i_cdev, struct lprf, my_char_dev);    //http://stackoverflow.com/questions/15832301/understanding-container-of-macro-in-linux-kerne0;
-	ret = mutex_lock_interruptible(&lprf->mutex);
-	if(ret)
-	{
-		PRINT_DEBUG("LPRF locked, locking failed");
-		return ret;
-	}
+
 	filp->private_data = lprf;
 
 	PRINT_DEBUG("LPRF successfully opened as char device");
 	return 0;
 
-//unlock_mutex:
-//	mutex_unlock(&lprf->mutex);
-//	return ret;
+
 }
 
 
@@ -237,8 +290,6 @@ int lprf_release_char_device(struct inode *inode, struct file *filp)
 	struct lprf *lprf;
 	lprf = container_of(inode->i_cdev, struct lprf, my_char_dev);
 
-
-	mutex_unlock(&lprf->mutex);
 
 	PRINT_DEBUG("LPRF char device successfully released");
 	return 0;
@@ -512,7 +563,8 @@ static int lprf_probe(struct spi_device *spi)
 	u32 custom_value = 0;
 	int ret = 0;
 	struct lprf_platform_data *pdata = 0;
-	struct lprf *lprf = kzalloc(sizeof(*lprf), GFP_KERNEL);
+	struct lprf *lprf = 0;
+	struct ieee802154_hw *ieee802154_hw = 0;
 	PRINT_DEBUG( "call lprf_probe");
 
 	pdata = spi->dev.platform_data;
@@ -520,10 +572,7 @@ static int lprf_probe(struct spi_device *spi)
 	// Get platform data
 	if (!IS_ENABLED(CONFIG_OF) || !spi->dev.of_node) {
 		if (!pdata)
-		{
-			ret = -ENOENT;
-			goto free_lprf;
-		}
+			return -ENOENT;
 	}
 
 	PRINT_DEBUG( "successfully parsed platform data");
@@ -532,11 +581,20 @@ static int lprf_probe(struct spi_device *spi)
 	ret = of_property_read_u32(spi->dev.of_node, "some-custom-value", &custom_value);
 	PRINT_DEBUG( "returned value:\t%d, custom value:\t%d", ret, custom_value);
 
-	spi_set_drvdata(spi, lprf);
+	ieee802154_hw = ieee802154_alloc_hw(sizeof(*lprf), &ieee802154_lprf_callbacks);
+	if( ieee802154_hw == 0)
+		return -ENOMEM;
+	PRINT_DEBUG("Successfully allocated ieee802154_hw structure");
+
+	lprf = ieee802154_hw->priv;
+	lprf->ieee802154_hw = ieee802154_hw;
 
 	lprf->spi_device = spi;
-	mutex_init(&lprf->mutex);
-	mutex_lock(&lprf->mutex);
+	spi_set_drvdata(spi, lprf);
+
+	ieee802154_hw->flags = 0;
+	ieee802154_hw->parent = &lprf->spi_device->dev;
+	ieee802154_random_extended_addr(&ieee802154_hw->phy->perm_extended_addr);
 
 	lprf->regmap = devm_regmap_init_spi(spi, &lprf_regmap_spi_config);
 	if (IS_ERR(lprf->regmap)) {
@@ -547,35 +605,35 @@ static int lprf_probe(struct spi_device *spi)
 
 	ret = lprf_detect_device(lprf);
 	if(ret)
-		goto unlock_mutex;
+		goto free_lprf;
 
 	ret = init_lprf_hardware(lprf);
 	if(ret)
-		goto unlock_mutex;
+		goto free_lprf;
 	PRINT_DEBUG("Hardware successfully initialized and demodulation started");
 
 	ret = allocate_spi_buffer_and_receive_data(lprf);
 	if (ret)
-		goto unlock_mutex;
+		goto free_lprf;
 	PRINT_DEBUG("Spi Buffer successfully allocated and data receive started");
 
 	ret = register_char_device(lprf);
 	if(ret)
 		goto free_spi_buffer;
 
-	// if code is added here make sure to unregister char device on error case.
+	ret = ieee802154_register_hw(ieee802154_hw);
+	if (ret)
+		goto unregister_char_device;
+	PRINT_DEBUG("Successfully registered IEEE 802.15.4 device");
 
-	mutex_unlock(&lprf->mutex);
 	return ret;
 
-//unregister_char_device:
-//	unregister_char_device(lprf);
+unregister_char_device:
+	unregister_char_device(lprf);
 free_spi_buffer:
 	kfifo_free(&lprf->spi_buffer);
-unlock_mutex:
-	mutex_unlock(&lprf->mutex);
 free_lprf:
-	kfree(lprf);
+	ieee802154_free_hw(ieee802154_hw);
 
 	return ret;
 }
@@ -587,7 +645,8 @@ static int lprf_remove(struct spi_device *spi)
 	kfifo_free(&lprf->spi_buffer);
 	unregister_char_device(lprf);
 
-	kfree(lprf);
+	ieee802154_unregister_hw(lprf->ieee802154_hw);
+	ieee802154_free_hw(lprf->ieee802154_hw);
 	PRINT_DEBUG("Successfully removed LPRF SPI Device");
 
 	return 0;
