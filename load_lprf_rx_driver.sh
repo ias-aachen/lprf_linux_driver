@@ -1,13 +1,21 @@
 #!/bin/bash
 
-LPRF_DIR="/home/pi/workspace/lprf_driver_rx"
+LPRF_DIR="/home/pi/workspace/lprf_driver_rx/"
+
+if ls ${LPRF_DIR} | grep "lprf.dtbo" &> /dev/null
+then
+	echo "Device tree file binary already exists. Nothing to do."
+else
+	echo "lprf chip device tree file will be compiled..."
+	dtc -@ -I dts -O dtb -o ${LPRF_DIR}lprf.dtbo ${LPRF_DIR}lprf-overlay.dts
+fi
 
 if dtoverlay -l | grep "lprf" &> /dev/null
 then
 	echo "lprf chip is already in device tree. Nothing to do."
 else
 	echo "lprf chip device tree file will be loaded..."
-	dtoverlay $LPRF_DIR/lprf.dtbo
+	dtoverlay ${LPRF_DIR}lprf.dtbo
 fi
 
 
@@ -32,7 +40,7 @@ then
 fi
 
 echo "lprf module will be inserted..."
-insmod $LPRF_DIR/lprf_rx.ko
+insmod ${LPRF_DIR}lprf_rx.ko
 
 echo "device file /dev/lprf will be created..."
 major=$(awk "\$2==\"lprf_rx\" {print \$1}" /proc/devices)
