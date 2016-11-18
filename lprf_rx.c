@@ -70,8 +70,6 @@ static const struct regmap_config lprf_regmap_spi_config = {
 	.cache_type = REGCACHE_NONE,
 };
 
-static struct lprf lprf_global;  // todo: Does it have to be global?
-
 static inline int lprf_read_register(struct lprf *lprf, unsigned int address, unsigned int *value)
 {
 	int ret = 0;
@@ -270,7 +268,7 @@ ssize_t lprf_read_char_device(struct file *filp, char __user *buf, size_t count,
 }
 
 
-static int allocate_ring_buffer_and_receive_data(struct lprf *lprf)
+static int allocate_spi_buffer_and_receive_data(struct lprf *lprf)
 {
 	int ret = 0;
 	int i  = 0;
@@ -380,6 +378,13 @@ unregister:
 	return ret;
 }
 
+static inline void unregister_char_device(struct lprf *lprf)
+{
+	dev_t dev_number = lprf->my_char_dev.dev;
+	cdev_del(&lprf->my_char_dev);
+	unregister_chrdev_region(dev_number, 1);
+	PRINT_DEBUG( "Removed Char Device");
+}
 
 static int init_lprf_hardware(struct lprf *lprf)
 {
@@ -507,7 +512,7 @@ static int lprf_probe(struct spi_device *spi)
 	u32 custom_value = 0;
 	int ret = 0;
 	struct lprf_platform_data *pdata = 0;
-	struct lprf *lprf = &lprf_global;
+	struct lprf *lprf = kzalloc(sizeof(*lprf), GFP_KERNEL);
 	PRINT_DEBUG( "call lprf_probe");
 
 	pdata = spi->dev.platform_data;
@@ -515,7 +520,10 @@ static int lprf_probe(struct spi_device *spi)
 	// Get platform data
 	if (!IS_ENABLED(CONFIG_OF) || !spi->dev.of_node) {
 		if (!pdata)
-			return -ENOENT;
+		{
+			ret = -ENOENT;
+			goto free_lprf;
+		}
 	}
 
 	PRINT_DEBUG( "successfully parsed platform data");
@@ -524,6 +532,7 @@ static int lprf_probe(struct spi_device *spi)
 	ret = of_property_read_u32(spi->dev.of_node, "some-custom-value", &custom_value);
 	PRINT_DEBUG( "returned value:\t%d, custom value:\t%d", ret, custom_value);
 
+	spi_set_drvdata(spi, lprf);
 
 	lprf->spi_device = spi;
 	mutex_init(&lprf->mutex);
@@ -538,35 +547,49 @@ static int lprf_probe(struct spi_device *spi)
 
 	ret = lprf_detect_device(lprf);
 	if(ret)
-		goto free_device;
+		goto unlock_mutex;
 
 	ret = init_lprf_hardware(lprf);
 	if(ret)
-		goto free_device;
+		goto unlock_mutex;
+	PRINT_DEBUG("Hardware successfully initialized and demodulation started");
 
-	allocate_ring_buffer_and_receive_data(lprf);
+	ret = allocate_spi_buffer_and_receive_data(lprf);
+	if (ret)
+		goto unlock_mutex;
+	PRINT_DEBUG("Spi Buffer successfully allocated and data receive started");
 
 	ret = register_char_device(lprf);
 	if(ret)
-		goto free_device;
+		goto free_spi_buffer;
 
 	// if code is added here make sure to unregister char device on error case.
 
-free_device:
-
 	mutex_unlock(&lprf->mutex);
+	return ret;
+
+//unregister_char_device:
+//	unregister_char_device(lprf);
+free_spi_buffer:
+	kfifo_free(&lprf->spi_buffer);
+unlock_mutex:
+	mutex_unlock(&lprf->mutex);
+free_lprf:
+	kfree(lprf);
 
 	return ret;
 }
 
 static int lprf_remove(struct spi_device *spi)
 {
-	dev_t dev_number = lprf_global.my_char_dev.dev;
+	struct lprf *lprf = spi_get_drvdata(spi);
 
-	kfifo_free(&lprf_global.spi_buffer);
-	cdev_del(&lprf_global.my_char_dev);  // todo: is it possible to not directly access the global structure
-	unregister_chrdev_region(dev_number, 1);
-	PRINT_DEBUG( "Removed Char Device");
+	kfifo_free(&lprf->spi_buffer);
+	unregister_char_device(lprf);
+
+	kfree(lprf);
+	PRINT_DEBUG("Successfully removed LPRF SPI Device");
+
 	return 0;
 }
 
