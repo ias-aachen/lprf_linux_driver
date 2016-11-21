@@ -23,11 +23,6 @@
 		};
 	};
 	
-	fragment@1 {
-		target = <&spidev0>;
-		__overlay__ {
-			status = "disabled";
-		};
-	};
+
 	
 };
