@@ -2,6 +2,12 @@
 
 LPRF_DIR="/home/pi/workspace/lprf_driver_rx/"
 
+if dtoverlay -l | grep "spi" &> /dev/null
+then
+	echo "Spi overlay loaded. Spi overlay will be removed..."
+	dtoverlay -r spi
+fi
+
 if ls ${LPRF_DIR} | grep "lprf.dtbo" &> /dev/null
 then
 	echo "Device tree file binary already exists. Nothing to do."
