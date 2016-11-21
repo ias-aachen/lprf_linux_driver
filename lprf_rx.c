@@ -238,16 +238,20 @@ free_rx_buf:
 
 static int lprf_start_ieee802154(struct ieee802154_hw *hw)
 {
+	PRINT_DEBUG("Called unimplemented function lprf_start_ieee802154()");
 	return 0;
 }
 
 static void lprf_stop_ieee802154(struct ieee802154_hw *hw)
 {
 
+	PRINT_DEBUG("Called unimplemented function lprf_stop_ieee802154()");
 }
 
 static int lprf_set_ieee802154_channel(struct ieee802154_hw *hw, u8 page, u8 channel)
 {
+
+	PRINT_DEBUG("Called unimplemented function lprf_set_ieee802154_channel()");
 	return 0;
 }
 
@@ -255,6 +259,8 @@ static int lprf_set_ieee802154_addr_filter(struct ieee802154_hw *hw,
 		    struct ieee802154_hw_addr_filt *filt,
 		    unsigned long changed)
 {
+
+	PRINT_DEBUG("Called unimplemented function lprf_set_ieee802154_addr_filter()");
 	return 0;
 }
 
