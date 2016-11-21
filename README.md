@@ -17,3 +17,9 @@ sudo rm -f /dev/lprf
 sudo mknod /dev/lprf c $major 0
 xxd /dev/lprf
 xxd -b /dev/lprf
+
+# WPAN
+sudo ip link set wpan0 down
+sudo iwpan dev wpan0 set pan_id 0xdead
+sudo iwpan dev wpan0 set short_addr 0xbeef
+sudo ip link set wpan0 up
