@@ -29,6 +29,7 @@
  */
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/wait.h>
 #include <linux/mutex.h>
 #include <linux/gpio.h>
 #include <linux/fs.h>
@@ -96,6 +97,28 @@ static const struct ieee802154_ops  ieee802154_lprf_callbacks = {
 	.set_promiscuous_mode = 0, // Disabled in hw_flags
 };
 
+/**
+ * Calculates the RX Length counter based on the datarate and frame_length (assuming 32MHz clock speed on chip)
+ *
+ * @kbitrate: over the air daterate in kb/s
+ * @frame_length: frame length in bytes
+ */
+static inline int get_rx_length_counter_H(int kbit_rate, int frame_length)
+{
+	const int chip_speed_kHz = 32000;
+	return 8 * frame_length * chip_speed_kHz / kbit_rate + 4 * chip_speed_kHz / kbit_rate;
+}
+
+/**
+ * Reverses the bit order of byte
+ */
+static inline void reverse_bit_order(uint8_t *byte)
+{
+	*byte = ((*byte & 0xaa) >> 1) | ((*byte & 0x55) << 1);
+	*byte = ((*byte & 0xcc) >> 2) | ((*byte & 0x33) << 2);
+	*byte = (*byte >> 4) | (*byte << 4);
+}
+
 static inline int lprf_read_register(struct lprf *lprf, unsigned int address, unsigned int *value)
 {
 	int ret = 0;
@@ -129,11 +152,21 @@ static inline int lprf_write_subreg(struct lprf *lprf,
 	return regmap_update_bits(lprf->regmap, addr, mask, data << shift);
 }
 
+static void preprocess_received_data(uint8_t *data, int length)
+{
+	int i = 0;
+	for (i = 0; i < length; ++i)
+	{
+		reverse_bit_order(&data[i]);
+	}
+}
+
 static void __lprf_read_frame_complete(void *context)
 {
 	struct lprf *lprf = 0;
 	struct spi_transfer *transfer = 0;
 	uint8_t *rx_buf = 0;
+	uint8_t *data_buf = 0;
 	uint8_t *tx_buf = 0;
 	uint8_t status = 0;
 	int length = 0;
@@ -145,13 +178,15 @@ static void __lprf_read_frame_complete(void *context)
 	transfer = list_entry(lprf->spi_message.transfers.next, struct spi_transfer, transfer_list);
 	rx_buf = (uint8_t*) transfer->rx_buf;
 	tx_buf = (uint8_t*) transfer->tx_buf;
+	data_buf = rx_buf + 2; // first two bytes of rx_buf do not contain data
 
 	status = rx_buf[0];
 	length = rx_buf[1];
 
-	// do not copy first two bytes that contain status and length information
-	bytes_copied = kfifo_in(&lprf->spi_buffer, &rx_buf[2], length);
+	preprocess_received_data(data_buf, length);
+	bytes_copied = kfifo_in(&lprf->spi_buffer, data_buf, length);
 
+	wake_up_interruptible(&lprf->wait_for_fifo_data);
 	PRINT_DEBUG("Copied %d bytes of %d received bytes to ring buffer", bytes_copied, length);
 
 	if (length > 0) // LPRF FIFO not empty -> get more data
@@ -161,6 +196,7 @@ static void __lprf_read_frame_complete(void *context)
 		return;
 	}
 
+	atomic_set(&lprf->is_reading_from_fifo, 0);
 	spi_transfer_del(transfer);
 	kfree(rx_buf);
 	kfree(tx_buf);
@@ -224,6 +260,8 @@ static int read_lprf_fifo(struct lprf *lprf)
 	spi_message_add_tail(transfer, &lprf->spi_message);
 
 	__lprf_read_frame(lprf);
+	atomic_set(&lprf->is_reading_from_fifo, 1);
+
 	return 0;
 
 	PRINT_DEBUG("Error during memory allocation in read_lprf_fifo");
@@ -279,10 +317,25 @@ static int lprf_ieee802154_energy_detection(struct ieee802154_hw *hw, u8 *level)
 
 int lprf_open_char_device(struct inode *inode, struct file *filp)
 {
-	struct lprf *lprf;
+	struct lprf *lprf = 0;
+	int ret = 0;
 	lprf = container_of(inode->i_cdev, struct lprf, my_char_dev);    //http://stackoverflow.com/questions/15832301/understanding-container-of-macro-in-linux-kerne0;
 
 	filp->private_data = lprf;
+
+	 // todo: put this in a function with better error management
+	lprf_write_subreg(lprf, SR_DEM_RESETB, 0);
+	lprf_write_subreg(lprf, SR_DEM_RESETB, 1);
+	lprf_write_subreg(lprf, SR_FIFO_RESETB, 0);
+	lprf_write_subreg(lprf, SR_FIFO_RESETB, 1);
+	lprf_write_subreg(lprf, SR_SM_RESETB, 0);
+	lprf_write_subreg(lprf, SR_SM_RESETB, 1);
+	lprf_write_subreg(lprf, SR_SM_COMMAND, STATE_CMD_RX);
+	lprf_write_subreg(lprf, SR_SM_COMMAND, STATE_CMD_NONE);
+
+	ret = read_lprf_fifo(lprf);
+	if (ret)
+		return ret;
 
 	PRINT_DEBUG("LPRF successfully opened as char device");
 	return 0;
@@ -311,6 +364,20 @@ ssize_t lprf_read_char_device(struct file *filp, char __user *buf, size_t count,
 
 	PRINT_DEBUG("Read from user space with buffer size %d requested", count);
 
+	if( kfifo_is_empty(&lprf->spi_buffer) &&
+			atomic_read(&lprf->is_reading_from_fifo))
+	{
+		PRINT_DEBUG("Read_char_device goes to sleep because of empty buffer.");
+		ret = wait_event_interruptible_timeout(
+				lprf->wait_for_fifo_data,
+				!(kfifo_is_empty(&lprf->spi_buffer) &&
+				atomic_read(&lprf->is_reading_from_fifo)),
+				HZ);
+		if (ret < 0)
+			return ret;
+		PRINT_DEBUG("Returned from sleep in read_char_device.");
+	}
+
 	buffer_length = kfifo_len(&lprf->spi_buffer);
 	bytes_to_copy = (count < buffer_length) ? count : buffer_length;
 
@@ -325,37 +392,13 @@ ssize_t lprf_read_char_device(struct file *filp, char __user *buf, size_t count,
 }
 
 
-static int allocate_spi_buffer_and_receive_data(struct lprf *lprf)
+static int allocate_spi_buffer(struct lprf *lprf)
 {
 	int ret = 0;
-	int i  = 0;
 
 	ret = kfifo_alloc(&lprf->spi_buffer, 2048, GFP_KERNEL);
 	if (ret)
 		return ret;
-
-	//lprf_write_subreg(lprf, SR_SM_COMMAND, STATE_CMD_RX);   //change state to RX
-
-	for (i = 0; i < 10000; ++i)
-	{
-		int PD;
-		lprf_read_subreg(lprf, SR_DEM_PD_OUT, &PD);
-		if (PD != 0)
-		{
-			PRINT_DEBUG("Preamble Detected after %d SPI reads", i);
-			break;
-		}
-	}
-
-	mdelay(100);  // todo just for testing, remove later
-	lprf_write_subreg(lprf, SR_DEM_EN, 0);
-	PRINT_DEBUG("Demodulation disabled after 0.1 seconds");
-
-	ret = read_lprf_fifo(lprf);
-	if (ret)
-		return ret;
-
-	PRINT_DEBUG("Receive Data successfully called");
 	return 0;
 }
 
@@ -446,17 +489,12 @@ static inline void unregister_char_device(struct lprf *lprf)
 static int init_lprf_hardware(struct lprf *lprf)
 {
 	// todo evaluate return values
+	int rx_counter_length = get_rx_length_counter_H(KBIT_RATE, FRAME_LENGTH);
 
-	// Global Reset
 	lprf_write_register(lprf, RG_GLOBAL_RESETB, 0xFF);
 	lprf_write_register(lprf, RG_GLOBAL_RESETB, 0x00);
 	lprf_write_register(lprf, RG_GLOBAL_RESETB, 0xFF);
-
-	lprf_write_register(lprf, RG_GLOBAL_initALL, 0xFF); // Load Init Values
-
-	lprf_write_subreg(lprf, SR_SM_EN, 0);          // Disable State machine
-
-	// Set external Clock
+	lprf_write_register(lprf, RG_GLOBAL_initALL, 0xFF);
 	lprf_write_subreg(lprf, SR_CTRL_CLK_CDE_OSC, 0);
 	lprf_write_subreg(lprf, SR_CTRL_CLK_CDE_PAD, 1);
 	lprf_write_subreg(lprf, SR_CTRL_CLK_DIG_OSC, 0);
@@ -468,35 +506,34 @@ static int init_lprf_hardware(struct lprf *lprf)
 	lprf_write_subreg(lprf, SR_CTRL_CLK_FALLB, 0);
 
 	// activate 2.4GHz Band
-	lprf_write_subreg(lprf, SR_RX_FE_EN, 1);            //enable RX frontend
-	lprf_write_subreg(lprf, SR_RX_RF_MODE, 0);          //set band to 2.4GHz
-	lprf_write_subreg(lprf, SR_RX_LO_EXT, 1);           //set to external LO
-	lprf_write_subreg(lprf, SR_RX24_PON, 1);            //power on RX24 frontend
-	lprf_write_subreg(lprf, SR_RX800_PON, 0);           //power off RX800 frontend
-	lprf_write_subreg(lprf, SR_RX433_PON, 0);           //power on RX433 frontend
+	lprf_write_subreg(lprf, SR_RX_RF_MODE, 0);
+	lprf_write_subreg(lprf, SR_RX_LO_EXT, 1);
+
+
 	//lprf_write_subreg(lprf, SR_LNA24_CTRIM, 255);
 	lprf_write_subreg(lprf, SR_PPF_TRIM, 5);
 
-	lprf_write_subreg(lprf, SR_PPF_HGAIN, 1);           //magic Polyphase filter settings
-	lprf_write_subreg(lprf, SR_PPF_LLIF, 0);            //magic Polyphase filter settings
-	lprf_write_subreg(lprf, SR_LNA24_ISETT, 7);         //ioSetReg('LNA24_ISETT','07');  max current for (wakeup?) 2.4GHz LNA
+	lprf_write_subreg(lprf, SR_PPF_HGAIN, 1);
+	lprf_write_subreg(lprf, SR_PPF_LLIF, 0);
+	lprf_write_subreg(lprf, SR_LNA24_ISETT, 7);
 	lprf_write_subreg(lprf, SR_LNA24_SPCTRIM, 15);
 
 	// ADC_CLK
 	lprf_write_subreg(lprf, SR_CTRL_CDE_ENABLE, 0);
 	lprf_write_subreg(lprf, SR_CTRL_C3X_ENABLE, 1);
-	lprf_write_subreg(lprf, SR_CTRL_CLK_ADC, 1);  // Activate Clock tripler
+	lprf_write_subreg(lprf, SR_CTRL_CLK_ADC, 1);
 	lprf_write_subreg(lprf, SR_CTRL_C3X_LTUNE, 1);
 
 
-	lprf_write_subreg(lprf, SR_CTRL_ADC_MULTIBIT, 0); // Set single bit mode for ADC
+	lprf_write_subreg(lprf, SR_CTRL_ADC_MULTIBIT, 0);
 	//lprf_write_subreg(lprf, SR_ADC_D_EN, 1);
-	lprf_write_subreg(lprf, SR_CTRL_ADC_ENABLE, 1);   // Activate ADC
+	lprf_write_subreg(lprf, SR_CTRL_ADC_ENABLE, 1);
 
-	lprf_write_subreg(lprf, SR_LDO_A, 1);           //Enable LDOs
-	lprf_write_subreg(lprf, SR_LDO_A_VOUT, 0x11);     //configure LDOs
+	lprf_write_subreg(lprf, SR_LDO_A_VOUT, 0x11);
+	lprf_write_subreg(lprf, SR_LDO_D_VOUT, 0x12);
 
-	lprf_write_subreg(lprf, SR_LDO_D_VOUT, 0x12);     //configure LDOs
+
+
 
 	// initial gain settings
 	lprf_write_subreg(lprf, SR_DEM_GC1, 0);
@@ -509,7 +546,6 @@ static int init_lprf_hardware(struct lprf *lprf)
 
 
 	lprf_write_subreg(lprf, SR_DEM_CLK96_SEL, 1);
-	lprf_write_subreg(lprf, SR_DEM_PD_EN, 1); // needs to be enabled if fifo is used
 	lprf_write_subreg(lprf, SR_DEM_AGC_EN, 1);
 	lprf_write_subreg(lprf, SR_DEM_FREQ_OFFSET_CAL_EN, 0);
 	lprf_write_subreg(lprf, SR_DEM_OSR_SEL, 0);
@@ -534,32 +570,49 @@ static int init_lprf_hardware(struct lprf *lprf)
 	lprf_write_subreg(lprf, SR_DEM_IQ_INV, 0);
 
 	//lprf_write_subreg(lprf, SR_CTRL_C3X_LTUNE, 0);
-	//lprf_write_subreg(lprf, SR_INVERT_FIFO_CLK, 0);  // Only works with statemachine
 
-	//activate_external_96MHz_clock();
-	//manual_gain_settings();
+	// STATE MASCHINE CONFIGURATION
 
-	//manual_PLL_configuration();
+	lprf_write_subreg(lprf, SR_FIFO_MODE_EN, 1);
 
+	// SM TX
+	lprf_write_subreg(lprf, SR_TX_MODE, 0);
+	lprf_write_subreg(lprf, SR_INVERT_FIFO_CLK, 0);
+	lprf_write_subreg(lprf, SR_DIRECT_RX, 0);
+	lprf_write_subreg(lprf, SR_TX_ON_FIFO_IDLE, 0);
+	lprf_write_subreg(lprf, SR_TX_ON_FIFO_SLEEP, 0);
+	lprf_write_subreg(lprf, SR_TX_IDLE_MODE_EN, 0);
 
-	// start demodulation
-	lprf_write_subreg(lprf, SR_DEM_RESETB, 0);
-	lprf_write_subreg(lprf, SR_DEM_RESETB, 1);
-	lprf_write_subreg(lprf, SR_DEM_EN, 1);
+	// SM RX
+	lprf_write_subreg(lprf, SR_DIRECT_TX, 0);
+	lprf_write_subreg(lprf, SR_DIRECT_TX_IDLE, 0);
+	lprf_write_subreg(lprf, SR_RX_HOLD_MODE_EN, 0);
+	lprf_write_subreg(lprf, SR_RX_TIMEOUT_EN, 1);
+	lprf_write_subreg(lprf, SR_RX_HOLD_ON_TIMEOUT, 0);
+	lprf_write_subreg(lprf, SR_AGC_AUTO_GAIN, 0);
 
+	// lprf_write_subreg(lprf, SR_RSSI_THRESHOLD, 2);  //--> default value
 
+	lprf_write_subreg(lprf, SR_RX_LENGTH_H, COUNTER_H_BYTE(rx_counter_length));
+	lprf_write_subreg(lprf, SR_RX_LENGTH_M, COUNTER_M_BYTE(rx_counter_length));
+	lprf_write_subreg(lprf, SR_RX_LENGTH_L, COUNTER_L_BYTE(rx_counter_length));
 
-//	lprf_write_subreg(lprf, SR_SM_EN, 1);               //enable state machine
-//	lprf_write_subreg(lprf, SR_FIFO_MODE_EN, 1);        //enable FIFO mode
-//	lprf_write_subreg(lprf, SR_DIRECT_TX, 0);           //disable transition to TX
-//	lprf_write_subreg(lprf, SR_DIRECT_TX_IDLE, 0);      //do not transition to TX based on packet counter or fifo full
-//	lprf_write_subreg(lprf, SR_RX_HOLD_MODE_EN, 0);     //do not transition to RX_HOLD based on packet counter or fifo full
-//	lprf_write_subreg(lprf, SR_RX_TIMEOUT_EN, 0);       //disable RX_TIMEOUT counter
-//	lprf_write_subreg(lprf, SR_RX_HOLD_ON_TIMEOUT, 0);  //disable transition RX -> RX_HOLD based on timeout counter
-//	lprf_write_subreg(lprf, SR_AGC_AUTO_GAIN, 0);       //disable LNA gain switching based on RSSI
-//	lprf_write_subreg(lprf, SR_RX_LENGTH_H, 127);
-//	lprf_write_subreg(lprf, SR_RX_LENGTH_M, 255);    //set RX_LENGTH to maximum
-//	lprf_write_subreg(lprf, SR_RX_LENGTH_L, 255);
+	lprf_write_subreg(lprf, SR_RX_TIMEOUT_H, 0xFF);
+	lprf_write_subreg(lprf, SR_RX_TIMEOUT_M, 0xFF);
+	lprf_write_subreg(lprf, SR_RX_TIMEOUT_L, 0xFF);
+
+	lprf_write_subreg(lprf, SR_WAKEUPONSPI, 1);
+	lprf_write_subreg(lprf, SR_WAKEUPONRX, 0);
+	lprf_write_subreg(lprf, SR_WAKEUP_MODES_EN, 0);
+
+	// -> PLL Configuration
+
+	lprf_write_subreg(lprf, SR_FIFO_RESETB, 0);
+	lprf_write_subreg(lprf, SR_FIFO_RESETB, 1);
+
+	lprf_write_subreg(lprf, SR_SM_EN, 1);
+	lprf_write_subreg(lprf, SR_SM_RESETB, 0);
+	lprf_write_subreg(lprf, SR_SM_RESETB, 1);
 
 	return 0;
 }
@@ -598,6 +651,8 @@ static int lprf_probe(struct spi_device *spi)
 	lprf->spi_device = spi;
 	spi_set_drvdata(spi, lprf);
 
+	init_waitqueue_head(&lprf->wait_for_fifo_data);
+
 	ieee802154_hw->flags = 0;
 	ieee802154_hw->parent = &lprf->spi_device->dev;
 	ieee802154_random_extended_addr(&ieee802154_hw->phy->perm_extended_addr);
@@ -616,9 +671,9 @@ static int lprf_probe(struct spi_device *spi)
 	ret = init_lprf_hardware(lprf);
 	if(ret)
 		goto free_lprf;
-	PRINT_DEBUG("Hardware successfully initialized and demodulation started");
+	PRINT_DEBUG("Hardware successfully initialized");
 
-	ret = allocate_spi_buffer_and_receive_data(lprf);
+	ret = allocate_spi_buffer(lprf);
 	if (ret)
 		goto free_lprf;
 	PRINT_DEBUG("Spi Buffer successfully allocated and data receive started");

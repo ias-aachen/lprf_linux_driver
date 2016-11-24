@@ -30,7 +30,12 @@
 #define LPRF_DEBUG  // Remove comment to show debug outputs
 #define LPRF_INFO  // Remove comment to show info outputs
 #define LPRF_MAX_BUF 256
+#define FRAME_LENGTH 32
+#define KBIT_RATE 2000
 
+#define COUNTER_H_BYTE(c) (((c) & 0xFF0000) >> 16)
+#define COUNTER_M_BYTE(c) (((c) & 0x00FF00) >> 8)
+#define COUNTER_L_BYTE(c) ((c) & 0x0000FF)
 
 #undef PRINT_DEBUG
 #ifdef LPRF_DEBUG
@@ -60,6 +65,8 @@ struct lprf {
 	struct spi_message spi_message;
 	DECLARE_KFIFO_PTR(spi_buffer, uint8_t);
 	struct ieee802154_hw *ieee802154_hw;
+	atomic_t is_reading_from_fifo;
+	wait_queue_head_t wait_for_fifo_data;
 };
 
 
