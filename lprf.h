@@ -30,7 +30,7 @@
 #define LPRF_DEBUG  // Remove comment to show debug outputs
 #define LPRF_INFO  // Remove comment to show info outputs
 #define LPRF_MAX_BUF 256
-#define FRAME_LENGTH 1000 // select one byte more to take shifting into account
+#define FRAME_LENGTH 100 // select one byte more to take shifting into account
 #define KBIT_RATE 2000
 #define FIFO_PACKET_SIZE 256
 

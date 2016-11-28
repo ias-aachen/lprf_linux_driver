@@ -61,6 +61,7 @@ static int lprf_set_ieee802154_addr_filter(struct ieee802154_hw *hw,
 static int lprf_xmit_ieee802154_async(struct ieee802154_hw *hw, struct sk_buff *skb);
 static int lprf_ieee802154_energy_detection(struct ieee802154_hw *hw, u8 *level);
 
+DECLARE_KFIFO(data_buffer_for_char_driver_interface, uint8_t, 4096);
 
 struct lprf_platform_data {
 	int some_custom_value;
@@ -152,6 +153,143 @@ static inline int lprf_write_subreg(struct lprf *lprf,
 	return regmap_update_bits(lprf->regmap, addr, mask, data << shift);
 }
 
+/**
+ * Compares number_of_bits bits starting from the LSB and returns
+ * the number of equal bits.
+ */
+static inline int number_of_equal_bits(uint32_t x1, uint32_t x2,
+		int number_of_bits)
+{
+	int i = 0;
+	int counter = 0;
+	uint32_t combined = ~(x1 ^ x2);
+
+	for (i = 0; i < number_of_bits; ++i)
+	{
+		counter += combined & 1;
+		combined >>= 1;
+	}
+	return counter;
+}
+
+/**
+ * Calculates the data shift from the start of frame delimiter
+ * @data: rx_data received from chip. Bit order and polarity needs to be
+ * 	already corrected
+ * @data_length: number of bytes in data.
+ * @uint8_t sfd: start of frame delimiter, i.e. 0xe5
+ * @preamble_length: number of octets in the preamble. The maximum supported
+ * 	length is 4 octets
+ * @is_first_preamble_bit_one: For FSK-modulation based data transfers
+ * 	there are basically two types of preambles 010101... and 101010...
+ * 	This parameter selects the type currently used.
+ *
+ * Returns the shift value (6/7/8) or zero if sfd was not found.
+ *
+ * The lprf chip has a hardware preamble detection. However, the hardware
+ * preamble detection is limited to 8 bit (or optionally 5 bit). In the
+ * IEEE 802.15.4 standard the preambles typically have a length of 4 byte.
+ * Additionally the data from the chip is sometimes misaligned by one bit.
+ * Therefore the additional preamble bits have to be removed and the
+ * misalignment has to be adjusted in software.
+ */
+static int find_SFD_and_shift_data(uint8_t *data, int *data_length,
+		uint8_t sfd, int preamble_length)
+{
+	int i;
+	int sfd_start_postion = preamble_length - 1;
+	int data_start_position = sfd_start_postion + 1;
+	int shift = 8;
+	int no_shift, one_bit_shift, two_bit_shift;
+
+	if (*data_length < sfd_start_postion + 2)
+		return -EFAULT;
+
+	no_shift = number_of_equal_bits(sfd, data[sfd_start_postion], 8);
+	one_bit_shift = number_of_equal_bits(sfd,
+				((data[sfd_start_postion] << 8) |
+				data[sfd_start_postion+1]) >> 7, 8);
+	two_bit_shift = number_of_equal_bits(sfd,
+				((data[sfd_start_postion] << 8) |
+				data[sfd_start_postion+1]) >> 6, 8);
+
+	if(no_shift < 7 && one_bit_shift < 7 && two_bit_shift < 7)
+	{
+		PRINT_DEBUG("SFD not found.");
+		return 0;
+	}
+
+	if (one_bit_shift >= 7)
+		shift -= 1;
+	else if (two_bit_shift >= 7)
+		shift -= 2;
+
+	PRINT_DEBUG("Data will be shifted by %d bits to the right", shift);
+
+	for (i = 0; i < *data_length - sfd_start_postion - 1; ++i)
+	{
+		data[i] = ((data[i + data_start_position] << 8) |
+				data[i + data_start_position + 1]) >> shift;
+	}
+	*data_length -= (sfd_start_postion + 1);
+
+	return shift;
+}
+
+static int lprf_receive_ieee802154_data(struct lprf *lprf)
+{
+	int buffer_length = 0;
+	int frame_length = 0;
+	uint8_t *buffer = 0;
+	struct sk_buff *skb;
+	int ret = 0;
+	int lqi = 0;
+
+	buffer_length = kfifo_len(&lprf->spi_buffer);
+	buffer = kzalloc(buffer_length * sizeof(*buffer), GFP_KERNEL);
+	if (buffer == 0)
+		return -ENOMEM;
+
+	if(kfifo_out(&lprf->spi_buffer, buffer, buffer_length) != buffer_length) {
+		ret = -EINVAL;
+		goto free_data;
+	}
+
+	if (find_SFD_and_shift_data(buffer, &buffer_length, 0xe5, 4) == 0) {
+		PRINT_DEBUG("SFD not found, ignoring frame");
+		ret = -EINVAL;
+		goto free_data;
+	}
+
+	frame_length = buffer[0];
+
+	if (!ieee802154_is_valid_psdu_len(frame_length)) {
+		PRINT_DEBUG("Frame with invalid length %d received", frame_length);
+		ret = -EINVAL;
+		goto free_data;
+	}
+
+	if (frame_length > buffer_length) {
+		PRINT_DEBUG("frame length greater than received data length");
+		ret = -EINVAL;
+		goto free_data;
+	}
+	PRINT_DEBUG("Length of received frame is %d", frame_length);
+
+	skb = dev_alloc_skb(frame_length);
+	if (!skb) {
+		ret = -ENOMEM;
+		goto free_data;
+	}
+
+	memcpy(skb_put(skb, frame_length), buffer + 1, frame_length);
+	ieee802154_rx_irqsafe(lprf->ieee802154_hw, skb, lqi);
+
+free_data:
+	kfree(buffer);
+	return ret;
+}
+
 static void preprocess_received_data(uint8_t *data, int length)
 {
 	int i = 0;
@@ -159,8 +297,6 @@ static void preprocess_received_data(uint8_t *data, int length)
 	{
 		reverse_bit_order_and_invert_bits(&data[i]);
 	}
-	PRINT_DEBUG("Number of bits to shift: %d",
-			determine_data_shift(data, length, 0xe5, 4, 1));
 }
 
 static void __lprf_read_frame_complete(void *context)
@@ -186,7 +322,8 @@ static void __lprf_read_frame_complete(void *context)
 	phy_status = rx_buf[0];
 	length = rx_buf[1];
 
-	preprocess_received_data(rx_buf, length);
+	preprocess_received_data(data_buf, length);
+	bytes_copied = kfifo_in(&data_buffer_for_char_driver_interface, data_buf, length);
 	bytes_copied = kfifo_in(&lprf->spi_buffer, data_buf, length);
 
 	wake_up_interruptible(&lprf->wait_for_fifo_data);
@@ -200,7 +337,9 @@ static void __lprf_read_frame_complete(void *context)
 		return;
 	}
 
+	lprf_receive_ieee802154_data(lprf);
 	atomic_set(&lprf->is_reading_from_fifo, 0);
+
 	spi_transfer_del(transfer);
 	kfree(rx_buf);
 	kfree(tx_buf);
@@ -368,13 +507,13 @@ ssize_t lprf_read_char_device(struct file *filp, char __user *buf, size_t count,
 
 	PRINT_DEBUG("Read from user space with buffer size %d requested", count);
 
-	if( kfifo_is_empty(&lprf->spi_buffer) &&
+	if( kfifo_is_empty(&data_buffer_for_char_driver_interface) &&
 			atomic_read(&lprf->is_reading_from_fifo))
 	{
 		PRINT_DEBUG("Read_char_device goes to sleep because of empty buffer.");
 		ret = wait_event_interruptible_timeout(
 				lprf->wait_for_fifo_data,
-				!(kfifo_is_empty(&lprf->spi_buffer) &&
+				!(kfifo_is_empty(&data_buffer_for_char_driver_interface) &&
 				atomic_read(&lprf->is_reading_from_fifo)),
 				HZ);
 		if (ret < 0)
@@ -382,10 +521,10 @@ ssize_t lprf_read_char_device(struct file *filp, char __user *buf, size_t count,
 		PRINT_DEBUG("Returned from sleep in read_char_device.");
 	}
 
-	buffer_length = kfifo_len(&lprf->spi_buffer);
+	buffer_length = kfifo_len(&data_buffer_for_char_driver_interface);
 	bytes_to_copy = (count < buffer_length) ? count : buffer_length;
 
-	ret = kfifo_to_user(&lprf->spi_buffer, buf, bytes_to_copy, &bytes_copied);
+	ret = kfifo_to_user(&data_buffer_for_char_driver_interface, buf, bytes_to_copy, &bytes_copied);
 	if(ret)
 		return ret;
 
@@ -400,6 +539,7 @@ static int allocate_spi_buffer(struct lprf *lprf)
 {
 	int ret = 0;
 
+	INIT_KFIFO(data_buffer_for_char_driver_interface);
 	ret = kfifo_alloc(&lprf->spi_buffer, 2024, GFP_KERNEL);
 	if (ret)
 		return ret;
