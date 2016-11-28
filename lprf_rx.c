@@ -112,11 +112,11 @@ static inline int get_rx_length_counter_H(int kbit_rate, int frame_length)
 /**
  * Reverses the bit order of byte
  */
-static inline void reverse_bit_order(uint8_t *byte)
+static inline void reverse_bit_order_and_invert_bits(uint8_t *byte)
 {
 	*byte = ((*byte & 0xaa) >> 1) | ((*byte & 0x55) << 1);
 	*byte = ((*byte & 0xcc) >> 2) | ((*byte & 0x33) << 2);
-	*byte = (*byte >> 4) | (*byte << 4);
+	*byte = ~((*byte >> 4) | (*byte << 4));
 }
 
 static inline int lprf_read_register(struct lprf *lprf, unsigned int address, unsigned int *value)
@@ -157,8 +157,10 @@ static void preprocess_received_data(uint8_t *data, int length)
 	int i = 0;
 	for (i = 0; i < length; ++i)
 	{
-		reverse_bit_order(&data[i]);
+		reverse_bit_order_and_invert_bits(&data[i]);
 	}
+	PRINT_DEBUG("Number of bits to shift: %d",
+			determine_data_shift(data, length, 0xe5, 4, 1));
 }
 
 static void __lprf_read_frame_complete(void *context)
@@ -168,9 +170,10 @@ static void __lprf_read_frame_complete(void *context)
 	uint8_t *rx_buf = 0;
 	uint8_t *data_buf = 0;
 	uint8_t *tx_buf = 0;
-	uint8_t status = 0;
+	uint8_t phy_status = 0;
 	int length = 0;
 	int bytes_copied = 0;
+	static const uint8_t SM_mask = 0xe0;
 
 	PRINT_DEBUG("Spi transfer completed");
 
@@ -180,16 +183,17 @@ static void __lprf_read_frame_complete(void *context)
 	tx_buf = (uint8_t*) transfer->tx_buf;
 	data_buf = rx_buf + 2; // first two bytes of rx_buf do not contain data
 
-	status = rx_buf[0];
+	phy_status = rx_buf[0];
 	length = rx_buf[1];
 
-	preprocess_received_data(data_buf, length);
+	preprocess_received_data(rx_buf, length);
 	bytes_copied = kfifo_in(&lprf->spi_buffer, data_buf, length);
 
 	wake_up_interruptible(&lprf->wait_for_fifo_data);
 	PRINT_DEBUG("Copied %d bytes of %d received bytes to ring buffer", bytes_copied, length);
 
-	if (length > 0) // LPRF FIFO not empty -> get more data
+	// LPRF FIFO not empty or still receiving -> get more data
+	if (length == FIFO_PACKET_SIZE-1 || (phy_status & SM_mask) == 0xe0)
 	{
 		// note that buffers get reused without deleting old data
 		__lprf_read_frame(lprf);
@@ -396,7 +400,7 @@ static int allocate_spi_buffer(struct lprf *lprf)
 {
 	int ret = 0;
 
-	ret = kfifo_alloc(&lprf->spi_buffer, 2048, GFP_KERNEL);
+	ret = kfifo_alloc(&lprf->spi_buffer, 2024, GFP_KERNEL);
 	if (ret)
 		return ret;
 	return 0;

@@ -30,8 +30,9 @@
 #define LPRF_DEBUG  // Remove comment to show debug outputs
 #define LPRF_INFO  // Remove comment to show info outputs
 #define LPRF_MAX_BUF 256
-#define FRAME_LENGTH 32
+#define FRAME_LENGTH 1000 // select one byte more to take shifting into account
 #define KBIT_RATE 2000
+#define FIFO_PACKET_SIZE 256
 
 #define COUNTER_H_BYTE(c) (((c) & 0xFF0000) >> 16)
 #define COUNTER_M_BYTE(c) (((c) & 0x00FF00) >> 8)
