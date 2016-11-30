@@ -67,17 +67,95 @@ struct lprf_platform_data {
 	int some_custom_value;
 };
 
+static bool lprf_reg_writeable(struct device *dev, unsigned int reg)
+{
+	if(((reg >= 0) && (reg < 53)) ||
+			((reg >= 56) && (reg < 70)) ||
+			((reg >= 80) && (reg < 176)) ||
+			((reg >= 192) && (reg <= 243)))
+		return true;
+	else
+		return false;
+}
+
+static bool lprf_is_read_only_reg(unsigned int reg)
+{
+	switch (reg) {
+	case RG_PLL_TPM_GAIN_OUT_L:
+	case RG_PLL_TPM_GAIN_OUT_M:
+	case RG_PLL_TPM_GAIN_OUT_H:
+	case RG_DEM_PD_OUT:
+	case RG_DEM_GC_AOUT:
+	case RG_DEM_GC_BOUT:
+	case RG_DEM_GC_COUT:
+	case RG_DEM_GC_DOUT:
+	case RG_DEM_FREQ_OFFSET_OUT:
+	case RG_SM_STATE:
+	case RG_SM_FIFO:
+	case RG_SM_GLOBAL:
+	case RG_SM_POWER:
+	case RG_SM_RX:
+	case RG_SM_WAKEUP_EN:
+	case RG_SM_DEM_ADC:
+	case RG_SM_PLL_TX:
+	case RG_SM_PLL_CHAN_INT:
+	case RG_SM_PLL_CHAN_FRAC_H:
+	case RG_SM_PLL_CHAN_FRAC_M:
+	case RG_SM_PLL_CHAN_FRAC_L:
+	case RG_SM_TX433:
+	case RG_SM_TX800:
+	case RG_SM_TX24:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static bool lprf_reg_readable(struct device *dev, unsigned int reg)   //part of struct regmap_config lprf_regmap_spi_config
+{
+
+	return lprf_reg_writeable(dev, reg) ||
+			lprf_is_read_only_reg(reg);
+}
+
+static bool lprf_reg_volatile(struct device *dev, unsigned int reg)      //part of struct regmap_config lprf_regmap_spi_config
+{
+	// All Read Only Registers are volatile
+	if (lprf_is_read_only_reg(reg))
+		return true;
+
+	switch (reg) {
+	case RG_GLOBAL_RESETB:
+	case RG_GLOBAL_initALL:
+	case RG_ACTIVATE_ALL:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static bool lprf_reg_precious(struct device *dev, unsigned int reg)       //part of struct regmap_config lprf_regmap_spi_config
+{
+	// The LPRF-Chip has no precious register
+	return false;
+}
+
 static const struct regmap_config lprf_regmap_spi_config = {
 	.reg_bits = 16,
 	.reg_stride = 1,
 	.pad_bits = 0,
 	.val_bits = 8,
-	.fast_io = 0, // use mutex or spinlock for locking
 	.read_flag_mask = 0x80,
 	.write_flag_mask = 0xc0,
+	.fast_io = 0, // use mutex or spinlock for locking
+	.max_register = 0xF3,
 	.use_single_rw = 1, // single read write commands or bulk read write
 	.can_multi_write = 0,
-	.cache_type = REGCACHE_NONE,
+	.cache_type = REGCACHE_RBTREE,
+	.writeable_reg = lprf_reg_writeable,
+	.readable_reg = lprf_reg_readable,
+	.volatile_reg = lprf_reg_volatile,
+	.precious_reg = lprf_reg_precious,
 };
 
 static const struct ieee802154_ops  ieee802154_lprf_callbacks = {
