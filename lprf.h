@@ -53,7 +53,9 @@
 #endif
 
 
-
+#define RETURN_ON_ERROR(f) ret = (f); \
+	if (ret) \
+		return ret
 
 
 
