@@ -53,17 +53,17 @@
 #endif
 
 
-#define RETURN_ON_ERROR(f) ret = (f); \
-	if (ret) \
-		return ret
-
-
+#define HANDLE_SPI_ERROR(f) ret = (f); \
+	if (ret) { \
+		mutex_unlock(&lprf->spi_mutex); \
+		return ret; \
+	}
 
 
 struct lprf {
 	struct spi_device *spi_device;
 	struct regmap *regmap;
-	struct mutex mutex;
+	struct mutex spi_mutex;
 	struct cdev my_char_dev;
 	struct spi_message spi_message;
 	DECLARE_KFIFO_PTR(spi_buffer, uint8_t);

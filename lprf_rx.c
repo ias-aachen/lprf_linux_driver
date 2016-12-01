@@ -203,6 +203,10 @@ static inline void reverse_bit_order_and_invert_bits(uint8_t *byte)
 	*byte = ~((*byte >> 4) | (*byte << 4));
 }
 
+/**
+ * Every function calling lprf_read_register needs to hold the
+ * lprf.spi_mutex.
+ */
 static inline int lprf_read_register(struct lprf *lprf, unsigned int address, unsigned int *value)
 {
 	int ret = 0;
@@ -211,6 +215,10 @@ static inline int lprf_read_register(struct lprf *lprf, unsigned int address, un
 	return ret;
 }
 
+/**
+ * Every function calling lprf_write_register needs to hold the
+ * lprf.spi_mutex.
+ */
 static inline int lprf_write_register(struct lprf *lprf, unsigned int address, unsigned int value)
 {
 	int ret = 0;
@@ -219,6 +227,10 @@ static inline int lprf_write_register(struct lprf *lprf, unsigned int address, u
 	return ret;
 }
 
+/**
+ * Every function calling lprf_read_subreg needs to hold the
+ * lprf.spi_mutex.
+ */
 static inline int lprf_read_subreg(struct lprf *lprf,
 		unsigned int addr, unsigned int mask,
 		unsigned int shift, unsigned int *data)
@@ -229,6 +241,10 @@ static inline int lprf_read_subreg(struct lprf *lprf,
 	return ret;
 }
 
+/**
+ * Every function calling lprf_write_subreg needs to hold the
+ * lprf.spi_mutex.
+ */
 static inline int lprf_write_subreg(struct lprf *lprf,
 		unsigned int addr, unsigned int mask,
 		unsigned int shift, unsigned int data)
@@ -428,6 +444,7 @@ static void __lprf_read_frame_complete(void *context)
 		return;
 	}
 
+	mutex_unlock(&lprf->spi_mutex);
 	lprf_receive_ieee802154_data(lprf);
 	atomic_set(&lprf->is_reading_from_fifo, 0);
 
@@ -463,11 +480,20 @@ static inline int __lprf_read_frame(struct lprf *lprf)
 	return spi_async(lprf->spi_device, &lprf->spi_message);
 }
 
+
 static int read_lprf_fifo(struct lprf *lprf)
 {
 	uint8_t *rx_buf = 0;
 	uint8_t *tx_buf = 0;
+	int ret = 0;
 	struct spi_transfer *transfer = 0;
+
+	ret = mutex_lock_interruptible(&lprf->spi_mutex);
+	if(ret)
+	{
+		PRINT_DEBUG("Function interrupted while waiting for mutex. Mutex could not be locked.");
+	        return ret;
+	}
 
 	// Freeing memory is taken care of by __lprf_read_frame_complete
 	rx_buf = kzalloc(LPRF_MAX_BUF + 2, GFP_KERNEL);
@@ -514,14 +540,22 @@ static int lprf_start_ieee802154(struct ieee802154_hw *hw)
 	struct lprf *lprf = hw->priv;
 
 	 // todo: put this in a function with better error management
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_DEM_RESETB, 0) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_DEM_RESETB, 1) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_FIFO_RESETB, 0) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_FIFO_RESETB, 1) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_SM_RESETB, 0) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_SM_RESETB, 1) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_SM_COMMAND, STATE_CMD_RX) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_SM_COMMAND, STATE_CMD_NONE));
+	ret = mutex_lock_interruptible(&lprf->spi_mutex);
+	if(ret)
+	{
+	        PRINT_DEBUG("Function interrupted while waiting for mutex. Mutex could not be locked.");
+	        return ret;
+	}
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_DEM_RESETB, 0) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_DEM_RESETB, 1) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_FIFO_RESETB, 0) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_FIFO_RESETB, 1) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_SM_RESETB, 0) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_SM_RESETB, 1) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_SM_COMMAND, STATE_CMD_RX) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_SM_COMMAND, STATE_CMD_NONE));
+
+	mutex_unlock(&lprf->spi_mutex);
 
 	ret = read_lprf_fifo(lprf);
 	if (ret)
@@ -655,15 +689,20 @@ static int lprf_detect_device(struct lprf *lprf)
 {
 	int rx_buf = 0, ret=0, chip_id = 0;
 
-	ret = lprf_read_register(lprf, RG_CHIP_ID_H, &rx_buf);
+	ret = mutex_lock_interruptible(&lprf->spi_mutex);
 	if(ret)
-		return ret;
+	{
+	        PRINT_DEBUG("Function interrupted while waiting for mutex. Mutex could not be locked.");
+	        return ret;
+	}
+
+	HANDLE_SPI_ERROR( lprf_read_register(lprf, RG_CHIP_ID_H, &rx_buf) );
 	chip_id |= (rx_buf << 8);
 
-	ret = lprf_read_register(lprf, RG_CHIP_ID_L, &rx_buf);
-	if(ret)
-		return ret;
+	HANDLE_SPI_ERROR( lprf_read_register(lprf, RG_CHIP_ID_L, &rx_buf) );
 	chip_id |= rx_buf;
+
+	mutex_unlock(&lprf->spi_mutex);
 
 	if (chip_id != 0x1a51)
 	{
@@ -732,131 +771,139 @@ static int init_lprf_hardware(struct lprf *lprf)
 	int ret = 0;
 	int rx_counter_length = get_rx_length_counter_H(KBIT_RATE, FRAME_LENGTH);
 
-	RETURN_ON_ERROR( lprf_write_register(lprf, RG_GLOBAL_RESETB, 0xFF) );
-	RETURN_ON_ERROR( lprf_write_register(lprf, RG_GLOBAL_RESETB, 0x00) );
-	RETURN_ON_ERROR( lprf_write_register(lprf, RG_GLOBAL_RESETB, 0xFF) );
-	RETURN_ON_ERROR( lprf_write_register(lprf, RG_GLOBAL_initALL, 0xFF) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_CTRL_CLK_CDE_OSC, 0) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_CTRL_CLK_CDE_PAD, 1) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_CTRL_CLK_DIG_OSC, 0) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_CTRL_CLK_DIG_PAD, 1) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_CTRL_CLK_PLL_OSC, 0) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_CTRL_CLK_PLL_PAD, 1) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_CTRL_CLK_C3X_OSC, 0) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_CTRL_CLK_C3X_PAD, 1) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_CTRL_CLK_FALLB, 0) );
+	ret = mutex_lock_interruptible(&lprf->spi_mutex);
+	if(ret)
+	{
+	        PRINT_DEBUG("Function interrupted while waiting for mutex. Mutex could not be locked.");
+	        return ret;
+	}
+	HANDLE_SPI_ERROR( lprf_write_register(lprf, RG_GLOBAL_RESETB, 0xFF) );
+	HANDLE_SPI_ERROR( lprf_write_register(lprf, RG_GLOBAL_RESETB, 0x00) );
+	HANDLE_SPI_ERROR( lprf_write_register(lprf, RG_GLOBAL_RESETB, 0xFF) );
+	HANDLE_SPI_ERROR( lprf_write_register(lprf, RG_GLOBAL_initALL, 0xFF) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_CTRL_CLK_CDE_OSC, 0) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_CTRL_CLK_CDE_PAD, 1) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_CTRL_CLK_DIG_OSC, 0) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_CTRL_CLK_DIG_PAD, 1) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_CTRL_CLK_PLL_OSC, 0) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_CTRL_CLK_PLL_PAD, 1) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_CTRL_CLK_C3X_OSC, 0) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_CTRL_CLK_C3X_PAD, 1) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_CTRL_CLK_FALLB, 0) );
 
 	// activate 2.4GHz Band
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_RX_RF_MODE, 0) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_RX_LO_EXT, 1) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_RX_RF_MODE, 0) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_RX_LO_EXT, 1) );
 
 
 	//RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_LNA24_CTRIM, 255) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_PPF_TRIM, 5) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_PPF_TRIM, 5) );
 
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_PPF_HGAIN, 1) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_PPF_LLIF, 0) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_LNA24_ISETT, 7) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_LNA24_SPCTRIM, 15) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_PPF_HGAIN, 1) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_PPF_LLIF, 0) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_LNA24_ISETT, 7) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_LNA24_SPCTRIM, 15) );
 
 	// ADC_CLK
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_CTRL_CDE_ENABLE, 0) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_CTRL_C3X_ENABLE, 1) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_CTRL_CLK_ADC, 1) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_CTRL_C3X_LTUNE, 1) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_CTRL_CDE_ENABLE, 0) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_CTRL_C3X_ENABLE, 1) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_CTRL_CLK_ADC, 1) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_CTRL_C3X_LTUNE, 1) );
 
 
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_CTRL_ADC_MULTIBIT, 0) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_CTRL_ADC_MULTIBIT, 0) );
 	//RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_ADC_D_EN, 1) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_CTRL_ADC_ENABLE, 1) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_CTRL_ADC_ENABLE, 1) );
 
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_LDO_A_VOUT, 0x11) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_LDO_D_VOUT, 0x12) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_LDO_A_VOUT, 0x11) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_LDO_D_VOUT, 0x12) );
 
 
 
 
 	// initial gain settings
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_DEM_GC1, 0) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_DEM_GC2, 0) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_DEM_GC3, 1) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_DEM_GC4, 0) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_DEM_GC5, 0) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_DEM_GC6, 1) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_DEM_GC7, 4) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_DEM_GC1, 0) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_DEM_GC2, 0) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_DEM_GC3, 1) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_DEM_GC4, 0) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_DEM_GC5, 0) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_DEM_GC6, 1) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_DEM_GC7, 4) );
 
 
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_DEM_CLK96_SEL, 1) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_DEM_AGC_EN, 1) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_DEM_FREQ_OFFSET_CAL_EN, 0) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_DEM_OSR_SEL, 0) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_DEM_BTLE_MODE, 1) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_DEM_CLK96_SEL, 1) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_DEM_AGC_EN, 1) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_DEM_FREQ_OFFSET_CAL_EN, 0) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_DEM_OSR_SEL, 0) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_DEM_BTLE_MODE, 1) );
 
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_DEM_IF_SEL, 2) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_DEM_DATA_RATE_SEL, 3) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_DEM_IF_SEL, 2) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_DEM_DATA_RATE_SEL, 3) );
 
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_PPF_M0, 0) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_PPF_M1, 0) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_PPF_TRIM, 0) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_PPF_HGAIN, 1) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_PPF_LLIF, 0) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_PPF_M0, 0) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_PPF_M1, 0) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_PPF_TRIM, 0) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_PPF_HGAIN, 1) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_PPF_LLIF, 0) );
 
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_CTRL_ADC_BW_SEL, 1) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_CTRL_ADC_BW_TUNE, 4) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_CTRL_ADC_DR_SEL, 2) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_CTRL_ADC_BW_SEL, 1) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_CTRL_ADC_BW_TUNE, 4) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_CTRL_ADC_DR_SEL, 2) );
 	//RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_CTRL_ADC_DWA, 1) );
 
 
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_DEM_IQ_CROSS, 1) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_DEM_IQ_INV, 0) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_DEM_IQ_CROSS, 1) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_DEM_IQ_INV, 0) );
 
 	//RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_CTRL_C3X_LTUNE, 0) );
 
 	// STATE MASCHINE CONFIGURATION
 
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_FIFO_MODE_EN, 1) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_FIFO_MODE_EN, 1) );
 
 	// SM TX
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_TX_MODE, 0) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_INVERT_FIFO_CLK, 0) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_DIRECT_RX, 0) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_TX_ON_FIFO_IDLE, 0) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_TX_ON_FIFO_SLEEP, 0) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_TX_IDLE_MODE_EN, 0) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_TX_MODE, 0) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_INVERT_FIFO_CLK, 0) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_DIRECT_RX, 0) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_TX_ON_FIFO_IDLE, 0) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_TX_ON_FIFO_SLEEP, 0) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_TX_IDLE_MODE_EN, 0) );
 
 	// SM RX
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_DIRECT_TX, 0) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_DIRECT_TX_IDLE, 0) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_RX_HOLD_MODE_EN, 0) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_RX_TIMEOUT_EN, 1) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_RX_HOLD_ON_TIMEOUT, 0) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_AGC_AUTO_GAIN, 0) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_DIRECT_TX, 0) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_DIRECT_TX_IDLE, 0) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_RX_HOLD_MODE_EN, 0) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_RX_TIMEOUT_EN, 1) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_RX_HOLD_ON_TIMEOUT, 0) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_AGC_AUTO_GAIN, 0) );
 
 	// lprf_write_subreg(lprf, SR_RSSI_THRESHOLD, 2);  //--> default value
 
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_RX_LENGTH_H,
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_RX_LENGTH_H,
 			COUNTER_H_BYTE(rx_counter_length)) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_RX_LENGTH_M,
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_RX_LENGTH_M,
 			COUNTER_M_BYTE(rx_counter_length)) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_RX_LENGTH_L,
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_RX_LENGTH_L,
 			COUNTER_L_BYTE(rx_counter_length)) );
 
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_RX_TIMEOUT_H, 0xFF) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_RX_TIMEOUT_M, 0xFF) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_RX_TIMEOUT_L, 0xFF) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_RX_TIMEOUT_H, 0xFF) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_RX_TIMEOUT_M, 0xFF) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_RX_TIMEOUT_L, 0xFF) );
 
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_WAKEUPONSPI, 1) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_WAKEUPONRX, 0) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_WAKEUP_MODES_EN, 0) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_WAKEUPONSPI, 1) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_WAKEUPONRX, 0) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_WAKEUP_MODES_EN, 0) );
 
 	// -> PLL Configuration
 
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_FIFO_RESETB, 0) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_FIFO_RESETB, 1) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_FIFO_RESETB, 0) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_FIFO_RESETB, 1) );
 
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_SM_EN, 1) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_SM_RESETB, 0) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_SM_RESETB, 1) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_SM_EN, 1) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_SM_RESETB, 0) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_SM_RESETB, 1) );
+
+	mutex_unlock(&lprf->spi_mutex);
 
 	return 0;
 }
@@ -892,6 +939,7 @@ static int lprf_probe(struct spi_device *spi)
 	lprf = ieee802154_hw->priv;
 	lprf->ieee802154_hw = ieee802154_hw;
 
+	mutex_init(&lprf->spi_mutex);
 	lprf->spi_device = spi;
 	spi_set_drvdata(spi, lprf);
 
