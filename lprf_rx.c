@@ -61,11 +61,16 @@ static int lprf_set_ieee802154_addr_filter(struct ieee802154_hw *hw,
 static int lprf_xmit_ieee802154_async(struct ieee802154_hw *hw, struct sk_buff *skb);
 static int lprf_ieee802154_energy_detection(struct ieee802154_hw *hw, u8 *level);
 
-DECLARE_KFIFO(data_buffer_for_char_driver_interface, uint8_t, 4096);
 
 struct lprf_platform_data {
 	int some_custom_value;
 };
+
+struct lprf_char_driver_interface {
+	atomic_t is_open;
+	DECLARE_KFIFO_PTR(data_buffer, uint8_t);
+
+} lprf_char_driver_interface;
 
 static bool lprf_reg_writeable(struct device *dev, unsigned int reg)
 {
@@ -377,6 +382,14 @@ static void preprocess_received_data(uint8_t *data, int length)
 	}
 }
 
+static void write_data_to_char_driver(uint8_t *data, int length)
+{
+	if (!atomic_read(&lprf_char_driver_interface.is_open))
+		return;
+
+	kfifo_in(&lprf_char_driver_interface.data_buffer, data, length);
+}
+
 static void __lprf_read_frame_complete(void *context)
 {
 	struct lprf *lprf = 0;
@@ -401,7 +414,7 @@ static void __lprf_read_frame_complete(void *context)
 	length = rx_buf[1];
 
 	preprocess_received_data(data_buf, length);
-	bytes_copied = kfifo_in(&data_buffer_for_char_driver_interface, data_buf, length);
+	write_data_to_char_driver(data_buf, length);
 	bytes_copied = kfifo_in(&lprf->spi_buffer, data_buf, length);
 
 	wake_up_interruptible(&lprf->wait_for_fifo_data);
@@ -497,7 +510,22 @@ free_rx_buf:
 
 static int lprf_start_ieee802154(struct ieee802154_hw *hw)
 {
-	PRINT_DEBUG("Called unimplemented function lprf_start_ieee802154()");
+	int ret = 0;
+	struct lprf *lprf = hw->priv;
+
+	 // todo: put this in a function with better error management
+	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_DEM_RESETB, 0) );
+	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_DEM_RESETB, 1) );
+	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_FIFO_RESETB, 0) );
+	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_FIFO_RESETB, 1) );
+	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_SM_RESETB, 0) );
+	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_SM_RESETB, 1) );
+	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_SM_COMMAND, STATE_CMD_RX) );
+	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_SM_COMMAND, STATE_CMD_NONE));
+
+	ret = read_lprf_fifo(lprf);
+	if (ret)
+		return ret;
 	return 0;
 }
 
@@ -544,19 +572,12 @@ int lprf_open_char_device(struct inode *inode, struct file *filp)
 
 	filp->private_data = lprf;
 
-	 // todo: put this in a function with better error management
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_DEM_RESETB, 0) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_DEM_RESETB, 1) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_FIFO_RESETB, 0) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_FIFO_RESETB, 1) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_SM_RESETB, 0) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_SM_RESETB, 1) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_SM_COMMAND, STATE_CMD_RX) );
-	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_SM_COMMAND, STATE_CMD_NONE));
-
-	ret = read_lprf_fifo(lprf);
+	ret = kfifo_alloc(&lprf_char_driver_interface.data_buffer,
+			2024, GFP_KERNEL);
 	if (ret)
 		return ret;
+
+	atomic_set(&lprf_char_driver_interface.is_open, 1);
 
 	PRINT_DEBUG("LPRF successfully opened as char device");
 	return 0;
@@ -570,6 +591,8 @@ int lprf_release_char_device(struct inode *inode, struct file *filp)
 	struct lprf *lprf;
 	lprf = container_of(inode->i_cdev, struct lprf, my_char_dev);
 
+	kfifo_free(&lprf_char_driver_interface.data_buffer);
+	atomic_set(&lprf_char_driver_interface.is_open, 0);
 
 	PRINT_DEBUG("LPRF char device successfully released");
 	return 0;
@@ -585,24 +608,21 @@ ssize_t lprf_read_char_device(struct file *filp, char __user *buf, size_t count,
 
 	PRINT_DEBUG("Read from user space with buffer size %d requested", count);
 
-	if( kfifo_is_empty(&data_buffer_for_char_driver_interface) &&
-			atomic_read(&lprf->is_reading_from_fifo))
+	if( kfifo_is_empty(&lprf_char_driver_interface.data_buffer) )
 	{
 		PRINT_DEBUG("Read_char_device goes to sleep because of empty buffer.");
-		ret = wait_event_interruptible_timeout(
-				lprf->wait_for_fifo_data,
-				!(kfifo_is_empty(&data_buffer_for_char_driver_interface) &&
-				atomic_read(&lprf->is_reading_from_fifo)),
-				HZ);
+		ret = wait_event_interruptible( lprf->wait_for_fifo_data,
+			!kfifo_is_empty(&lprf_char_driver_interface.data_buffer));
 		if (ret < 0)
 			return ret;
 		PRINT_DEBUG("Returned from sleep in read_char_device.");
 	}
 
-	buffer_length = kfifo_len(&data_buffer_for_char_driver_interface);
+	buffer_length = kfifo_len(&lprf_char_driver_interface.data_buffer);
 	bytes_to_copy = (count < buffer_length) ? count : buffer_length;
 
-	ret = kfifo_to_user(&data_buffer_for_char_driver_interface, buf, bytes_to_copy, &bytes_copied);
+	ret = kfifo_to_user(&lprf_char_driver_interface.data_buffer,
+			buf, bytes_to_copy, &bytes_copied);
 	if(ret)
 		return ret;
 
@@ -617,7 +637,6 @@ static int allocate_spi_buffer(struct lprf *lprf)
 {
 	int ret = 0;
 
-	INIT_KFIFO(data_buffer_for_char_driver_interface);
 	ret = kfifo_alloc(&lprf->spi_buffer, 2024, GFP_KERNEL);
 	if (ret)
 		return ret;
