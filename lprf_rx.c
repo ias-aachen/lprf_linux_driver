@@ -252,6 +252,24 @@ static inline int lprf_write_subreg(struct lprf *lprf,
 	return regmap_update_bits(lprf->regmap, addr, mask, data << shift);
 }
 
+
+/**
+ * Read the phy_status byte. The calling function needs to hold the
+ * lprf.spi_mutex
+ */
+static inline int lprf_read_phy_status(struct lprf *lprf)
+{
+	uint8_t rx_buf[] = {0};
+	int ret = 0;
+
+	ret = spi_read(lprf->spi_device, rx_buf, sizeof(rx_buf));
+	if (ret)
+		return ret;
+
+	return rx_buf[0];
+
+}
+
 /**
  * Compares number_of_bits bits starting from the LSB and returns
  * the number of equal bits.
@@ -508,11 +526,7 @@ static int read_lprf_fifo(struct lprf *lprf)
 	if (transfer == 0)
 		goto free_tx_buf;
 
-	// todo better to do this spi message initialization once in the probe function
-	spi_message_init(&lprf->spi_message);
 	lprf->spi_message.complete = __lprf_read_frame_complete;
-	lprf->spi_message.context = lprf;
-	lprf->spi_message.spi = lprf->spi_device;
 
 	transfer->rx_buf = rx_buf;
 	transfer->tx_buf = tx_buf;
@@ -938,6 +952,10 @@ static int lprf_probe(struct spi_device *spi)
 
 	lprf = ieee802154_hw->priv;
 	lprf->ieee802154_hw = ieee802154_hw;
+
+	spi_message_init(&lprf->spi_message);
+	lprf->spi_message.context = lprf;
+	lprf->spi_message.spi = lprf->spi_device;
 
 	mutex_init(&lprf->spi_mutex);
 	lprf->spi_device = spi;

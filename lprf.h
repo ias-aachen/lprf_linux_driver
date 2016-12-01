@@ -60,6 +60,11 @@
 	}
 
 
+/**
+ * @ spi_message: And spi_message struct that can be used for asynchronous
+ * 	spi transfers. Make sure to lock spi_mutex and set the correct callback
+ * 	when using spi_message.
+ */
 struct lprf {
 	struct spi_device *spi_device;
 	struct regmap *regmap;
