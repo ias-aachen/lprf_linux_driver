@@ -464,7 +464,6 @@ static void __lprf_read_frame_complete(void *context)
 
 	mutex_unlock(&lprf->spi_mutex);
 	lprf_receive_ieee802154_data(lprf);
-	atomic_set(&lprf->is_reading_from_fifo, 0);
 
 	spi_transfer_del(transfer);
 	kfree(rx_buf);
@@ -534,7 +533,6 @@ static int read_lprf_fifo(struct lprf *lprf)
 	spi_message_add_tail(transfer, &lprf->spi_message);
 
 	__lprf_read_frame(lprf);
-	atomic_set(&lprf->is_reading_from_fifo, 1);
 
 	return 0;
 

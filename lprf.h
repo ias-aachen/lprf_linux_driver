@@ -73,7 +73,6 @@ struct lprf {
 	struct spi_message spi_message;
 	DECLARE_KFIFO_PTR(spi_buffer, uint8_t);
 	struct ieee802154_hw *ieee802154_hw;
-	atomic_t is_reading_from_fifo;
 	wait_queue_head_t wait_for_fifo_data;
 };
 
