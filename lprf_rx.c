@@ -29,6 +29,7 @@
  */
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/hrtimer.h>
 #include <linux/wait.h>
 #include <linux/mutex.h>
 #include <linux/gpio.h>
@@ -51,6 +52,7 @@
 
 static int init_lprf_hardware(struct lprf *lprf);
 static inline int __lprf_read_frame(struct lprf *lprf);
+static inline void lprf_start_rx_polling(struct lprf *lprf);
 
 static int lprf_start_ieee802154(struct ieee802154_hw *hw);
 static void lprf_stop_ieee802154(struct ieee802154_hw *hw);
@@ -262,7 +264,16 @@ static inline int lprf_read_phy_status(struct lprf *lprf)
 	uint8_t rx_buf[] = {0};
 	int ret = 0;
 
+	ret = mutex_lock_interruptible(&lprf->spi_mutex);
+	if(ret)
+	{
+		PRINT_DEBUG("lprf_poll_rx interrupted while waiting for mutex. "
+				"Mutex could not be locked.");
+		return ret;
+	}
+
 	ret = spi_read(lprf->spi_device, rx_buf, sizeof(rx_buf));
+	mutex_unlock(&lprf->spi_mutex);
 	if (ret)
 		return ret;
 
@@ -464,6 +475,7 @@ static void __lprf_read_frame_complete(void *context)
 
 	mutex_unlock(&lprf->spi_mutex);
 	lprf_receive_ieee802154_data(lprf);
+	// todo change to RX and start polling
 
 	spi_transfer_del(transfer);
 	kfree(rx_buf);
@@ -546,6 +558,55 @@ free_rx_buf:
 }
 
 
+static enum hrtimer_restart lprf_poll_rx(struct hrtimer *timer)
+{
+	uint8_t phy_status = 0;
+	int ret = 0;
+	struct lprf *lprf = container_of(timer, struct lprf, rx_polling_timer);
+
+	ret = lprf_read_phy_status(lprf);
+	if (ret < 0)
+	{
+		PRINT_DEBUG("ERROR: lprf_read_phy_status returned"
+				" with value %d", ret);
+		return HRTIMER_NORESTART;
+	}
+
+	phy_status = (uint8_t) ret;
+
+	if( !PHY_FIFO_EMPTY(phy_status) &&
+			(PHY_SM_STATUS(phy_status) == PHY_SM_RECEIVING ||
+			PHY_SM_STATUS(phy_status) == PHY_SM_SLEEP))
+	{
+		PRINT_DEBUG("Data Received, Timer will not be restarted.");
+		ret = read_lprf_fifo(lprf);
+		if (ret)
+			PRINT_DEBUG("ERROR: read_lprf_fifo returned "
+					"with value %d", ret);
+		return HRTIMER_NORESTART;
+	}
+
+	hrtimer_forward_now(timer, RX_POLLING_INTERVAL);
+	return HRTIMER_RESTART;
+}
+
+
+static inline void lprf_start_rx_polling(struct lprf *lprf)
+{
+	hrtimer_init(&lprf->rx_polling_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+	lprf->rx_polling_timer.function = lprf_poll_rx;
+	hrtimer_start(&lprf->rx_polling_timer, RX_POLLING_INTERVAL, HRTIMER_MODE_REL);
+	PRINT_DEBUG("RX polling started");
+}
+
+
+static inline void lprf_stop_rx_polling(struct lprf *lprf)
+{
+	hrtimer_cancel(&lprf->rx_polling_timer);
+	PRINT_DEBUG("RX polling stopped");
+}
+
+
 static int lprf_start_ieee802154(struct ieee802154_hw *hw)
 {
 	int ret = 0;
@@ -569,16 +630,15 @@ static int lprf_start_ieee802154(struct ieee802154_hw *hw)
 
 	mutex_unlock(&lprf->spi_mutex);
 
-	ret = read_lprf_fifo(lprf);
-	if (ret)
-		return ret;
+	lprf_start_rx_polling(lprf);
+
 	return 0;
 }
 
 static void lprf_stop_ieee802154(struct ieee802154_hw *hw)
 {
-
-	PRINT_DEBUG("Called unimplemented function lprf_stop_ieee802154()");
+	struct lprf *lprf = hw->priv;
+	lprf_stop_rx_polling(lprf);
 }
 
 static int lprf_set_ieee802154_channel(struct ieee802154_hw *hw, u8 page, u8 channel)
@@ -885,7 +945,7 @@ static int init_lprf_hardware(struct lprf *lprf)
 	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_DIRECT_TX, 0) );
 	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_DIRECT_TX_IDLE, 0) );
 	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_RX_HOLD_MODE_EN, 0) );
-	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_RX_TIMEOUT_EN, 1) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_RX_TIMEOUT_EN, 0) );
 	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_RX_HOLD_ON_TIMEOUT, 0) );
 	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_AGC_AUTO_GAIN, 0) );
 

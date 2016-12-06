@@ -34,6 +34,21 @@
 #define KBIT_RATE 2000
 #define FIFO_PACKET_SIZE 256
 
+#define RX_POLLING_INTERVAL ktime_set(0, 5000000)
+
+#define PHY_SM_STATUS(phy_status)   (((phy_status) & 0xe0) >> 5)
+#define PHY_SM_ENABLE(phy_status)   (((phy_status) & 0x10) >> 4)
+#define PHY_FIFO_EMPTY(phy_status)  (((phy_status) & 0x08) >> 3)
+#define PHY_FIFO_FULL(phy_status)   (((phy_status) & 0x04) >> 2)
+
+#define PHY_SM_DEEPSLEEP            0x01
+#define PHY_SM_SLEEP                0x02
+#define PHY_SM_BUSY                 0x03
+#define PHY_SM_TX_RDY               0x04
+#define PHY_SM_SENDING              0x05
+#define PHY_SM_RX_RDY               0x06
+#define PHY_SM_RECEIVING            0x07
+
 #define COUNTER_H_BYTE(c) (((c) & 0xFF0000) >> 16)
 #define COUNTER_M_BYTE(c) (((c) & 0x00FF00) >> 8)
 #define COUNTER_L_BYTE(c) ((c) & 0x0000FF)
@@ -71,6 +86,7 @@ struct lprf {
 	struct mutex spi_mutex;
 	struct cdev my_char_dev;
 	struct spi_message spi_message;
+	struct hrtimer rx_polling_timer;
 	DECLARE_KFIFO_PTR(spi_buffer, uint8_t);
 	struct ieee802154_hw *ieee802154_hw;
 	wait_queue_head_t wait_for_fifo_data;
