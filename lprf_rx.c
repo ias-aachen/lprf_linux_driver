@@ -299,7 +299,7 @@ static void __lprf_frame_write_complete(void *context)
 
 	// todo start RX polling (maybe specific first interval)
 
-	wake_up_interruptible(&lprf->wait_for_frmw_complete);
+	wake_up(&lprf->wait_for_frmw_complete);
 }
 
 /**
@@ -338,13 +338,7 @@ static int lprf_change_state(struct lprf *lprf)
 	uint8_t phy_status = 0;
 	int ret = 0;
 
-	ret = mutex_lock_interruptible(&lprf->spi_mutex);
-	if(ret)
-	{
-		PRINT_KRIT("lprf_change_state interrupted while waiting for "
-				"mutex. Mutex could not be locked.");
-		return ret;
-	}
+	mutex_lock(&lprf->spi_mutex);
 
 	ret = lprf_read_phy_status(lprf);
 	if (ret < 0)
@@ -587,7 +581,7 @@ static void __lprf_read_frame_complete(void *context)
 	write_data_to_char_driver(data_buf, length);
 	bytes_copied = kfifo_in(&lprf->rx_buffer, data_buf, length);
 
-	wake_up_interruptible(&lprf->wait_for_fifo_data);
+	wake_up(&lprf->wait_for_fifo_data);
 	PRINT_KRIT("Copied %d bytes of %d received bytes to ring buffer", bytes_copied, length);
 
 	// LPRF FIFO not empty or still receiving -> get more data
@@ -626,13 +620,7 @@ static void lprf_poll_rx(struct work_struct *work)
 	struct lprf *lprf = container_of(work, struct lprf, poll_rx);
 
 	PRINT_KRIT("SPI Mutex will be locked in lprf_poll_rx");
-	ret = mutex_lock_interruptible(&lprf->spi_mutex);
-	if(ret)
-	{
-		PRINT_KRIT("lprf_poll_rx interrupted while waiting for mutex. "
-				"Mutex could not be locked.");
-		return;
-	}
+	mutex_lock(&lprf->spi_mutex);
 
 	ret = lprf_read_phy_status(lprf);
 	if (ret < 0)
@@ -698,17 +686,10 @@ static int lprf_start_ieee802154(struct ieee802154_hw *hw)
 
 static void lprf_stop_ieee802154(struct ieee802154_hw *hw)
 {
-	int ret = 0;
 	struct lprf *lprf = hw->priv;
 	atomic_set(&lprf->rx_polling_active, 0);
 	lprf_stop_rx_polling(lprf);
-	ret = mutex_lock_interruptible(&lprf->spi_mutex);
-	if(ret)
-	{
-		PRINT_DEBUG("lprf_stop_ieee802154 interrupted while waiting for mutex. "
-				"Mutex could not be locked.");
-		return;
-	}
+	mutex_lock(&lprf->spi_mutex);
 	lprf_write_subreg(lprf, SR_SM_COMMAND, STATE_CMD_SLEEP);
 	lprf_write_subreg(lprf, SR_SM_COMMAND, STATE_CMD_NONE);
 	lprf_write_subreg(lprf, SR_DEM_RESETB,  0);
@@ -871,12 +852,7 @@ static int lprf_detect_device(struct lprf *lprf)
 {
 	int rx_buf = 0, ret=0, chip_id = 0;
 
-	ret = mutex_lock_interruptible(&lprf->spi_mutex);
-	if(ret)
-	{
-	        PRINT_DEBUG("Function interrupted while waiting for mutex. Mutex could not be locked.");
-	        return ret;
-	}
+	mutex_lock(&lprf->spi_mutex);
 
 	HANDLE_SPI_ERROR( lprf_read_register(lprf, RG_CHIP_ID_H, &rx_buf) );
 	chip_id |= (rx_buf << 8);
@@ -953,12 +929,7 @@ static int init_lprf_hardware(struct lprf *lprf)
 	int ret = 0;
 	int rx_counter_length = get_rx_length_counter_H(KBIT_RATE, FRAME_LENGTH);
 
-	ret = mutex_lock_interruptible(&lprf->spi_mutex);
-	if(ret)
-	{
-	        PRINT_DEBUG("Function interrupted while waiting for mutex. Mutex could not be locked.");
-	        return ret;
-	}
+	mutex_lock(&lprf->spi_mutex);
 	HANDLE_SPI_ERROR( lprf_write_register(lprf, RG_GLOBAL_RESETB, 0xFF) );
 	HANDLE_SPI_ERROR( lprf_write_register(lprf, RG_GLOBAL_RESETB, 0x00) );
 	HANDLE_SPI_ERROR( lprf_write_register(lprf, RG_GLOBAL_RESETB, 0xFF) );
