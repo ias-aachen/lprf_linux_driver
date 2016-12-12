@@ -27,8 +27,16 @@
 #ifndef _LPRF_H_
 #define _LPRF_H_
 
-//#define LPRF_DEBUG  // Remove comment to show debug outputs
-#define LPRF_INFO  // Remove comment to show info outputs
+// Remove comment to show debug outputs
+#define LPRF_DEBUG
+
+/*
+ * Debug macro for timing critical parts like polling. Activating
+ * this macro will lead to a lot of debug messages and should only
+ * be used with decreased time resolution for polling (RX_POLLING_INTERVAL)
+ */
+// #define LPRF_DEBUG_KRIT
+
 #define LPRF_MAX_BUF 256
 #define FRAME_LENGTH 100 // select one byte more to take shifting into account
 #define KBIT_RATE 2000
@@ -61,11 +69,11 @@
 	#define PRINT_DEBUG(fmt, args...)
 #endif
 
-#undef PRINT_INFO
-#ifdef LPRF_INFO
-	#define PRINT_INFO(fmt, args...) printk( KERN_INFO "lprf: " fmt "\n", ## args)
+#undef PRINT_KRIT
+#ifdef LPRF_DEBUG_KRIT
+	#define PRINT_KRIT(fmt, args...) printk( KERN_DEBUG "lprf: " fmt "\n", ## args)
 #else
-	#define PRINT_INFO(fmt, args...)
+	#define PRINT_KRIT(fmt, args...)
 #endif
 
 

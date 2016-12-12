@@ -216,7 +216,7 @@ static inline int lprf_read_register(struct lprf *lprf, unsigned int address, un
 {
 	int ret = 0;
 	ret = regmap_read(lprf->regmap, address, value);
-	// PRINT_DEBUG( "Read value %X from LPRF register %X", *value, address);
+	// PRINT_KRIT( "Read value %X from LPRF register %X", *value, address);
 	return ret;
 }
 
@@ -228,7 +228,7 @@ static inline int lprf_write_register(struct lprf *lprf, unsigned int address, u
 {
 	int ret = 0;
 	ret = regmap_write(lprf->regmap, address, value);
-	// PRINT_DEBUG( "Write value %X to LPRF register %X", value, address);
+	// PRINT_KRIT( "Write value %X to LPRF register %X", value, address);
 	return ret;
 }
 
@@ -341,7 +341,7 @@ static int lprf_change_state(struct lprf *lprf)
 	ret = mutex_lock_interruptible(&lprf->spi_mutex);
 	if(ret)
 	{
-		PRINT_DEBUG("lprf_change_state interrupted while waiting for "
+		PRINT_KRIT("lprf_change_state interrupted while waiting for "
 				"mutex. Mutex could not be locked.");
 		return ret;
 	}
@@ -349,19 +349,19 @@ static int lprf_change_state(struct lprf *lprf)
 	ret = lprf_read_phy_status(lprf);
 	if (ret < 0)
 	{
-		PRINT_DEBUG("ERROR: lprf_read_phy_status returned"
+		PRINT_KRIT("ERROR: lprf_read_phy_status returned"
 				" with value %d", ret);
 		mutex_unlock(&lprf->spi_mutex);
 		return ret;
 	}
 	phy_status = (uint8_t) ret;
-	PRINT_DEBUG("In phy_status in state_change 0x%X", phy_status);
+	PRINT_KRIT("In phy_status in state_change 0x%X", phy_status);
 
 	if (!PHY_FIFO_EMPTY(phy_status) ||
 			PHY_SM_STATUS(phy_status) == PHY_SM_BUSY ||
 			PHY_SM_STATUS(phy_status) == PHY_SM_SENDING)
 	{
-		PRINT_DEBUG("Warning: LPRF Chip Busy, state change not possible");
+		PRINT_KRIT("Warning: LPRF Chip Busy, state change not possible");
 		mutex_unlock(&lprf->spi_mutex);
 		return -EBUSY;
 	}
@@ -382,7 +382,7 @@ static int lprf_change_state(struct lprf *lprf)
 		HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_SM_RESETB,   0) );
 		HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_SM_RESETB,   1) );
 
-		PRINT_DEBUG("Changed state to sleep, will change to TX");
+		PRINT_KRIT("Changed state to sleep, will change to TX");
 		// Will transmit pending TX data, change to TX state and
 		// unlock spi_mutex
 		lprf_transmit_tx_data(lprf);
@@ -403,7 +403,7 @@ static int lprf_change_state(struct lprf *lprf)
 				STATE_CMD_RX) );
 		HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_SM_COMMAND,
 				STATE_CMD_NONE));
-		PRINT_DEBUG("Changed state to RX");
+		PRINT_KRIT("Changed state to RX");
 		lprf_start_rx_polling(lprf);
 	}
 
@@ -474,7 +474,7 @@ static int find_SFD_and_shift_data(uint8_t *data, int *data_length,
 
 	if(no_shift < 7 && one_bit_shift < 7 && two_bit_shift < 7)
 	{
-		PRINT_DEBUG("SFD not found.");
+		PRINT_KRIT("SFD not found.");
 		return 0;
 	}
 
@@ -483,7 +483,7 @@ static int find_SFD_and_shift_data(uint8_t *data, int *data_length,
 	else if (two_bit_shift >= 7)
 		shift -= 2;
 
-	PRINT_DEBUG("Data will be shifted by %d bits to the right", shift);
+	PRINT_KRIT("Data will be shifted by %d bits to the right", shift);
 
 	for (i = 0; i < *data_length - sfd_start_postion - 1; ++i)
 	{
@@ -515,7 +515,7 @@ static int lprf_receive_ieee802154_data(struct lprf *lprf)
 	}
 
 	if (find_SFD_and_shift_data(buffer, &buffer_length, 0xe5, 4) == 0) {
-		PRINT_DEBUG("SFD not found, ignoring frame");
+		PRINT_KRIT("SFD not found, ignoring frame");
 		ret = -EINVAL;
 		goto free_data;
 	}
@@ -523,17 +523,17 @@ static int lprf_receive_ieee802154_data(struct lprf *lprf)
 	frame_length = buffer[0];
 
 	if (!ieee802154_is_valid_psdu_len(frame_length)) {
-		PRINT_DEBUG("Frame with invalid length %d received", frame_length);
+		PRINT_KRIT("Frame with invalid length %d received", frame_length);
 		ret = -EINVAL;
 		goto free_data;
 	}
 
 	if (frame_length > buffer_length) {
-		PRINT_DEBUG("frame length greater than received data length");
+		PRINT_KRIT("frame length greater than received data length");
 		ret = -EINVAL;
 		goto free_data;
 	}
-	PRINT_DEBUG("Length of received frame is %d", frame_length);
+	PRINT_KRIT("Length of received frame is %d", frame_length);
 
 	skb = dev_alloc_skb(frame_length);
 	if (!skb) {
@@ -575,7 +575,7 @@ static void __lprf_read_frame_complete(void *context)
 	int bytes_copied = 0;
 	static const uint8_t SM_mask = 0xe0;
 
-	PRINT_DEBUG("Spi transfer completed");
+	PRINT_KRIT("Spi transfer completed");
 
 	lprf = context;
 	data_buf = lprf->spi_rx_buf + 2; // first two bytes of rx_buf do not contain data
@@ -588,7 +588,7 @@ static void __lprf_read_frame_complete(void *context)
 	bytes_copied = kfifo_in(&lprf->rx_buffer, data_buf, length);
 
 	wake_up_interruptible(&lprf->wait_for_fifo_data);
-	PRINT_DEBUG("Copied %d bytes of %d received bytes to ring buffer", bytes_copied, length);
+	PRINT_KRIT("Copied %d bytes of %d received bytes to ring buffer", bytes_copied, length);
 
 	// LPRF FIFO not empty or still receiving -> get more data
 	if (length == FIFO_PACKET_SIZE-1 || (phy_status & SM_mask) == 0xe0)
@@ -625,11 +625,11 @@ static void lprf_poll_rx(struct work_struct *work)
 	int ret = 0;
 	struct lprf *lprf = container_of(work, struct lprf, poll_rx);
 
-	PRINT_DEBUG("SPI Mutex will be locked in lprf_poll_rx");
+	PRINT_KRIT("SPI Mutex will be locked in lprf_poll_rx");
 	ret = mutex_lock_interruptible(&lprf->spi_mutex);
 	if(ret)
 	{
-		PRINT_DEBUG("lprf_poll_rx interrupted while waiting for mutex. "
+		PRINT_KRIT("lprf_poll_rx interrupted while waiting for mutex. "
 				"Mutex could not be locked.");
 		return;
 	}
@@ -637,24 +637,24 @@ static void lprf_poll_rx(struct work_struct *work)
 	ret = lprf_read_phy_status(lprf);
 	if (ret < 0)
 	{
-		PRINT_DEBUG("ERROR: lprf_read_phy_status returned"
+		PRINT_KRIT("ERROR: lprf_read_phy_status returned"
 				" with value %d", ret);
 		mutex_unlock(&lprf->spi_mutex);
 		return;
 	}
 
 	phy_status = (uint8_t) ret;
-	PRINT_DEBUG("Poll RX... phy_status = 0x%X", phy_status);
+	PRINT_KRIT("Poll RX... phy_status = 0x%X", phy_status);
 
 	if( !PHY_FIFO_EMPTY(phy_status) &&
 			(PHY_SM_STATUS(phy_status) == PHY_SM_RECEIVING ||
 			PHY_SM_STATUS(phy_status) == PHY_SM_SLEEP))
 	{
-		PRINT_DEBUG("Data Received, Timer will not be restarted.");
+		PRINT_KRIT("Data Received, Timer will not be restarted.");
 		lprf_stop_rx_polling(lprf);
 		ret = read_lprf_fifo(lprf);
 		if (ret)
-			PRINT_DEBUG("ERROR: read_lprf_fifo returned "
+			PRINT_KRIT("ERROR: read_lprf_fifo returned "
 					"with value %d", ret);
 		// mutex will be unlocked by __lprf_read_frame_complete
 		return;
@@ -815,16 +815,16 @@ ssize_t lprf_read_char_device(struct file *filp, char __user *buf, size_t count,
 	int ret = 0;
 	struct lprf *lprf = filp->private_data;
 
-	PRINT_DEBUG("Read from user space with buffer size %d requested", count);
+	PRINT_KRIT("Read from user space with buffer size %d requested", count);
 
 	if( kfifo_is_empty(&lprf_char_driver_interface.data_buffer) )
 	{
-		PRINT_DEBUG("Read_char_device goes to sleep because of empty buffer.");
+		PRINT_KRIT("Read_char_device goes to sleep because of empty buffer.");
 		ret = wait_event_interruptible( lprf->wait_for_fifo_data,
 			!kfifo_is_empty(&lprf_char_driver_interface.data_buffer));
 		if (ret < 0)
 			return ret;
-		PRINT_DEBUG("Returned from sleep in read_char_device.");
+		PRINT_KRIT("Returned from sleep in read_char_device.");
 	}
 
 	buffer_length = kfifo_len(&lprf_char_driver_interface.data_buffer);
@@ -835,7 +835,7 @@ ssize_t lprf_read_char_device(struct file *filp, char __user *buf, size_t count,
 	if(ret)
 		return ret;
 
-	PRINT_DEBUG("%d/%d bytes copied to user.",
+	PRINT_KRIT("%d/%d bytes copied to user.",
 			bytes_copied, buffer_length);
 
 	return bytes_copied;
@@ -891,7 +891,7 @@ static int lprf_detect_device(struct lprf *lprf)
 		PRINT_DEBUG("Chip with invalid Chip ID %X found", chip_id);
 		return -ENODEV;
 	}
-	PRINT_INFO("LPRF Chip found with Chip ID %X", chip_id);
+	PRINT_DEBUG("LPRF Chip found with Chip ID %X", chip_id);
 	return 0;
 
 }
