@@ -764,15 +764,18 @@ int lprf_open_char_device(struct inode *inode, struct file *filp)
 	struct lprf *lprf = 0;
 	int ret = 0;
 	lprf = container_of(inode->i_cdev, struct lprf, my_char_dev);    //http://stackoverflow.com/questions/15832301/understanding-container-of-macro-in-linux-kerne0;
-
 	filp->private_data = lprf;
+
+	if (atomic_inc_return(&lprf_char_driver_interface.is_open) != 1)
+	{
+		atomic_dec(&lprf_char_driver_interface.is_open);
+		return -EMFILE;
+	}
 
 	ret = kfifo_alloc(&lprf_char_driver_interface.data_buffer,
 			2024, GFP_KERNEL);
 	if (ret)
 		return ret;
-
-	atomic_set(&lprf_char_driver_interface.is_open, 1);
 
 	PRINT_DEBUG("LPRF successfully opened as char device");
 	return 0;
@@ -787,7 +790,7 @@ int lprf_release_char_device(struct inode *inode, struct file *filp)
 	lprf = container_of(inode->i_cdev, struct lprf, my_char_dev);
 
 	kfifo_free(&lprf_char_driver_interface.data_buffer);
-	atomic_set(&lprf_char_driver_interface.is_open, 0);
+	atomic_dec(&lprf_char_driver_interface.is_open);
 
 	PRINT_DEBUG("LPRF char device successfully released");
 	return 0;
