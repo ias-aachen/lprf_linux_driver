@@ -289,6 +289,7 @@ static void __lprf_frame_write_complete(void *context)
 
 	if (!kfifo_is_empty(&lprf->tx_buffer))
 	{
+		PRINT_DEBUG("Still data in TX buffer to be transmitted.");
 		lprf_transmit_tx_data(lprf);
 		return;
 	}
@@ -313,8 +314,8 @@ static int lprf_transmit_tx_data(struct lprf *lprf)
 	uint8_t buffer_length = 0;
 
 	total_length = (kfifo_len(&lprf->tx_buffer));
-	buffer_length = (uint8_t) (buffer_length < LPRF_MAX_BUF - 1 ?
-				buffer_length : LPRF_MAX_BUF - 1);
+	buffer_length = (uint8_t) (total_length < LPRF_MAX_BUF - 1 ?
+			total_length : LPRF_MAX_BUF - 1);
 
 
 	lprf->spi_tx_buf[0] = 0x60; // Frame Write Command
@@ -621,7 +622,8 @@ static void lprf_poll_rx(struct work_struct *work)
 	struct lprf *lprf = container_of(work, struct lprf, poll_rx);
 
 	PRINT_KRIT("SPI Mutex will be locked in lprf_poll_rx");
-	mutex_lock(&lprf->spi_mutex);
+	if (!mutex_trylock(&lprf->spi_mutex))
+		return;
 
 	ret = lprf_read_phy_status(lprf);
 	if (ret < 0)
@@ -825,6 +827,33 @@ ssize_t lprf_read_char_device(struct file *filp, char __user *buf, size_t count,
 }
 
 
+ssize_t lprf_write_char_device(struct file *filp, const char __user *buf,
+		size_t count, loff_t *f_pos)
+{
+	int free_buffer_size = 0;
+	int bytes_to_copy = 0;
+	int bytes_copied = 0;
+	int ret = 0;
+	struct lprf *lprf = filp->private_data;
+
+	free_buffer_size = kfifo_avail(&lprf->tx_buffer);
+	bytes_to_copy = free_buffer_size < count ? free_buffer_size : count;
+
+	PRINT_DEBUG("Char driver write: TX buffer has %d bytes available",
+			free_buffer_size);
+
+	ret = kfifo_from_user(&lprf->tx_buffer, buf, bytes_to_copy,
+			&bytes_copied);
+	if (ret)
+		return ret;
+	PRINT_DEBUG("Copied %d/%d files to TX buffer", bytes_copied, count);
+
+	lprf_change_state(lprf);
+
+	return bytes_copied;
+}
+
+
 static int allocate_spi_buffer(struct lprf *lprf)
 {
 	int ret = 0;
@@ -881,7 +910,7 @@ static int lprf_detect_device(struct lprf *lprf)
 static const struct file_operations lprf_fops = {
 	.owner =             THIS_MODULE,
 	.read =              lprf_read_char_device,
-	.write =             0, //  needs to be implemented for tx case
+	.write =             lprf_write_char_device,
 	.unlocked_ioctl =    0, // can be implemented for additional control
 	.open =              lprf_open_char_device,
 	.release =           lprf_release_char_device,
@@ -1019,7 +1048,7 @@ static int init_lprf_hardware(struct lprf *lprf)
 	// SM TX
 	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_TX_MODE, 0) );
 	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_INVERT_FIFO_CLK, 0) );
-	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_DIRECT_RX, 0) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_DIRECT_RX, 1) );
 	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_TX_ON_FIFO_IDLE, 0) );
 	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_TX_ON_FIFO_SLEEP, 0) );
 	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_TX_IDLE_MODE_EN, 0) );
