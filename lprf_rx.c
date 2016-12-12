@@ -51,7 +51,8 @@
 
 
 static int init_lprf_hardware(struct lprf *lprf);
-static inline void lprf_start_rx_polling(struct lprf *lprf);
+static inline void lprf_start_rx_polling(struct lprf *lprf,
+		ktime_t first_interval);
 static inline void lprf_stop_rx_polling(struct lprf *lprf);
 static int lprf_transmit_tx_data(struct lprf *lprf);
 static int read_lprf_fifo(struct lprf *lprf);
@@ -297,7 +298,7 @@ static void __lprf_frame_write_complete(void *context)
 	PRINT_DEBUG("Changed state to TX");
 	mutex_unlock(&lprf->spi_mutex);
 
-	// todo start RX polling (maybe specific first interval)
+	lprf_start_rx_polling(lprf, TX_RX_INTERVAL);
 
 	wake_up(&lprf->wait_for_frmw_complete);
 }
@@ -398,7 +399,7 @@ static int lprf_change_state(struct lprf *lprf)
 		HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_SM_COMMAND,
 				STATE_CMD_NONE));
 		PRINT_KRIT("Changed state to RX");
-		lprf_start_rx_polling(lprf);
+		lprf_start_rx_polling(lprf, RX_RX_INTERVAL);
 	}
 
 	mutex_unlock(&lprf->spi_mutex);
@@ -661,10 +662,11 @@ static enum hrtimer_restart lprf_start_poll_rx(struct hrtimer *timer)
 }
 
 
-static inline void lprf_start_rx_polling(struct lprf *lprf)
+static inline void lprf_start_rx_polling(struct lprf *lprf,
+		ktime_t first_interval)
 {
 	if (atomic_read(&lprf->rx_polling_active))
-		hrtimer_start(&lprf->rx_polling_timer, RX_POLLING_INTERVAL,
+		hrtimer_start(&lprf->rx_polling_timer, first_interval,
 				HRTIMER_MODE_REL);
 }
 

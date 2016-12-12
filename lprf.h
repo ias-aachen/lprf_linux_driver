@@ -44,6 +44,8 @@
 #define MAX_SPI_BUFFER_SIZE (FIFO_PACKET_SIZE + 2)
 
 #define RX_POLLING_INTERVAL ktime_set(0, 5000000)
+#define RX_RX_INTERVAL ktime_set(0, 500000)
+#define TX_RX_INTERVAL ktime_set(0, 5000000)
 
 #define PHY_SM_STATUS(phy_status)   (((phy_status) & 0xe0) >> 5)
 #define PHY_SM_ENABLE(phy_status)   (((phy_status) & 0x10) >> 4)
