@@ -106,7 +106,6 @@ struct lprf {
 	struct ieee802154_hw *ieee802154_hw;
 	struct work_struct poll_rx;
 	atomic_t rx_polling_active;
-	wait_queue_head_t wait_for_fifo_data;
 	wait_queue_head_t wait_for_frmw_complete;
 };
 

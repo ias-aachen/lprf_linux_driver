@@ -75,6 +75,7 @@ struct lprf_platform_data {
 struct lprf_char_driver_interface {
 	atomic_t is_open;
 	DECLARE_KFIFO_PTR(data_buffer, uint8_t);
+	wait_queue_head_t wait_for_fifo_data;
 
 } lprf_char_driver_interface;
 
@@ -583,7 +584,7 @@ static void __lprf_read_frame_complete(void *context)
 	write_data_to_char_driver(data_buf, length);
 	bytes_copied = kfifo_in(&lprf->rx_buffer, data_buf, length);
 
-	wake_up(&lprf->wait_for_fifo_data);
+	wake_up(&lprf_char_driver_interface.wait_for_fifo_data);
 	PRINT_KRIT("Copied %d bytes of %d received bytes to ring buffer", bytes_copied, length);
 
 	// LPRF FIFO not empty or still receiving -> get more data
@@ -798,14 +799,14 @@ ssize_t lprf_read_char_device(struct file *filp, char __user *buf, size_t count,
 	int bytes_to_copy = 0;
 	int bytes_copied = 0;
 	int ret = 0;
-	struct lprf *lprf = filp->private_data;
 
 	PRINT_KRIT("Read from user space with buffer size %d requested", count);
 
 	if( kfifo_is_empty(&lprf_char_driver_interface.data_buffer) )
 	{
 		PRINT_KRIT("Read_char_device goes to sleep because of empty buffer.");
-		ret = wait_event_interruptible( lprf->wait_for_fifo_data,
+		ret = wait_event_interruptible(
+				lprf_char_driver_interface.wait_for_fifo_data,
 			!kfifo_is_empty(&lprf_char_driver_interface.data_buffer));
 		if (ret < 0)
 			return ret;
@@ -1142,7 +1143,7 @@ static int lprf_probe(struct spi_device *spi)
 
 	INIT_WORK(&lprf->poll_rx, lprf_poll_rx);
 
-	init_waitqueue_head(&lprf->wait_for_fifo_data);
+	init_waitqueue_head(&lprf_char_driver_interface.wait_for_fifo_data);
 	init_waitqueue_head(&lprf->wait_for_frmw_complete);
 
 	ieee802154_hw->flags = 0;
