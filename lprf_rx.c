@@ -371,13 +371,6 @@ static int lprf_change_state(struct lprf *lprf)
 				STATE_CMD_SLEEP) );
 		HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_SM_COMMAND,
 				STATE_CMD_NONE));
-		// Reset some Parts to fix bugs in digital part
-		HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_DEM_RESETB,  0) );
-		HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_DEM_RESETB,  1) );
-		HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_FIFO_RESETB, 0) );
-		HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_FIFO_RESETB, 1) );
-		HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_SM_RESETB,   0) );
-		HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_SM_RESETB,   1) );
 
 		PRINT_KRIT("Changed state to sleep, will change to TX");
 		// Will transmit pending TX data, change to TX state and
@@ -389,13 +382,6 @@ static int lprf_change_state(struct lprf *lprf)
 	// change to RX if not already RX
 	if (!(PHY_SM_STATUS(phy_status) == PHY_SM_RECEIVING))
 	{
-		// Reset some Parts to fix bugs in digital part
-		HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_DEM_RESETB,  0) );
-		HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_DEM_RESETB,  1) );
-		HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_FIFO_RESETB, 0) );
-		HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_FIFO_RESETB, 1) );
-		HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_SM_RESETB,   0) );
-		HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_SM_RESETB,   1) );
 		HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_SM_COMMAND,
 				STATE_CMD_RX) );
 		HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_SM_COMMAND,
@@ -594,6 +580,13 @@ static void __lprf_read_frame_complete(void *context)
 		read_lprf_fifo(lprf);
 		return;
 	}
+
+	lprf_write_subreg(lprf, SR_DEM_RESETB,  0);
+	lprf_write_subreg(lprf, SR_DEM_RESETB,  1);
+	lprf_write_subreg(lprf, SR_FIFO_RESETB, 0);
+	lprf_write_subreg(lprf, SR_FIFO_RESETB, 1);
+	lprf_write_subreg(lprf, SR_SM_RESETB,   0);
+	lprf_write_subreg(lprf, SR_SM_RESETB,   1);
 
 	mutex_unlock(&lprf->spi_mutex);
 	lprf_receive_ieee802154_data(lprf);
