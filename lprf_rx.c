@@ -51,8 +51,10 @@
 
 
 static int init_lprf_hardware(struct lprf *lprf);
-static inline int __lprf_read_frame(struct lprf *lprf);
 static inline void lprf_start_rx_polling(struct lprf *lprf);
+static inline void lprf_stop_rx_polling(struct lprf *lprf);
+static int lprf_transmit_tx_data(struct lprf *lprf);
+static int read_lprf_fifo(struct lprf *lprf);
 
 static int lprf_start_ieee802154(struct ieee802154_hw *hw);
 static void lprf_stop_ieee802154(struct ieee802154_hw *hw);
@@ -63,6 +65,7 @@ static int lprf_set_ieee802154_addr_filter(struct ieee802154_hw *hw,
 static int lprf_xmit_ieee802154_async(struct ieee802154_hw *hw, struct sk_buff *skb);
 static int lprf_ieee802154_energy_detection(struct ieee802154_hw *hw, u8 *level);
 
+static const uint8_t PHY_HEADER[] = {0x55, 0x55, 0x55, 0x55, 0xe5};
 
 struct lprf_platform_data {
 	int some_custom_value;
@@ -264,21 +267,149 @@ static inline int lprf_read_phy_status(struct lprf *lprf)
 	uint8_t rx_buf[] = {0};
 	int ret = 0;
 
-	ret = mutex_lock_interruptible(&lprf->spi_mutex);
-	if(ret)
-	{
-		PRINT_DEBUG("lprf_poll_rx interrupted while waiting for mutex. "
-				"Mutex could not be locked.");
-		return ret;
-	}
-
 	ret = spi_read(lprf->spi_device, rx_buf, sizeof(rx_buf));
-	mutex_unlock(&lprf->spi_mutex);
 	if (ret)
 		return ret;
 
 	return rx_buf[0];
 
+}
+
+/**
+ * Calling function must hold lprf.spi_mutex
+ */
+static void __lprf_frame_write_complete(void *context)
+{
+	struct lprf *lprf = 0;
+
+	PRINT_DEBUG("Spi Frame Write completed");
+
+	lprf = context;
+
+	if (!kfifo_is_empty(&lprf->tx_buffer))
+	{
+		lprf_transmit_tx_data(lprf);
+		return;
+	}
+
+	lprf_write_subreg(lprf, SR_SM_COMMAND, STATE_CMD_TX);
+	lprf_write_subreg(lprf, SR_SM_COMMAND, STATE_CMD_NONE);
+	PRINT_DEBUG("Changed state to TX");
+	mutex_unlock(&lprf->spi_mutex);
+
+	// todo start RX polling (maybe specific first interval)
+
+	wake_up_interruptible(&lprf->wait_for_frmw_complete);
+}
+
+/**
+ * Calling function must hold lprf.spi_mutex
+ */
+static int lprf_transmit_tx_data(struct lprf *lprf)
+{
+	int total_length = 0;
+	int bytes_copied = 0;
+	uint8_t buffer_length = 0;
+
+	total_length = (kfifo_len(&lprf->tx_buffer));
+	buffer_length = (uint8_t) (buffer_length < LPRF_MAX_BUF - 1 ?
+				buffer_length : LPRF_MAX_BUF - 1);
+
+
+	lprf->spi_tx_buf[0] = 0x60; // Frame Write Command
+	lprf->spi_tx_buf[1] = buffer_length;
+	bytes_copied = kfifo_out(&lprf->tx_buffer, lprf->spi_tx_buf + 2,
+			buffer_length);
+	if (bytes_copied != buffer_length)
+		PRINT_DEBUG("Warning: Only %d/%d bytes copied from Tx buffer",
+				bytes_copied, buffer_length);
+
+	lprf->spi_message.complete = __lprf_frame_write_complete;
+
+	lprf->spi_transfer.len = buffer_length;
+
+	return spi_async(lprf->spi_device, &lprf->spi_message);
+
+
+}
+
+static int lprf_change_state(struct lprf *lprf)
+{
+	uint8_t phy_status = 0;
+	int ret = 0;
+
+	ret = mutex_lock_interruptible(&lprf->spi_mutex);
+	if(ret)
+	{
+		PRINT_DEBUG("lprf_change_state interrupted while waiting for "
+				"mutex. Mutex could not be locked.");
+		return ret;
+	}
+
+	ret = lprf_read_phy_status(lprf);
+	if (ret < 0)
+	{
+		PRINT_DEBUG("ERROR: lprf_read_phy_status returned"
+				" with value %d", ret);
+		mutex_unlock(&lprf->spi_mutex);
+		return ret;
+	}
+	phy_status = (uint8_t) ret;
+	PRINT_DEBUG("In phy_status in state_change 0x%X", phy_status);
+
+	if (!PHY_FIFO_EMPTY(phy_status) ||
+			PHY_SM_STATUS(phy_status) == PHY_SM_BUSY ||
+			PHY_SM_STATUS(phy_status) == PHY_SM_SENDING)
+	{
+		PRINT_DEBUG("Warning: LPRF Chip Busy, state change not possible");
+		mutex_unlock(&lprf->spi_mutex);
+		return -EBUSY;
+	}
+
+	// If TX data available change to TX
+	if (!kfifo_is_empty(&lprf->tx_buffer))
+	{
+		lprf_stop_rx_polling(lprf);
+		HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_SM_COMMAND,
+				STATE_CMD_SLEEP) );
+		HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_SM_COMMAND,
+				STATE_CMD_NONE));
+		// Reset some Parts to fix bugs in digital part
+		HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_DEM_RESETB,  0) );
+		HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_DEM_RESETB,  1) );
+		HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_FIFO_RESETB, 0) );
+		HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_FIFO_RESETB, 1) );
+		HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_SM_RESETB,   0) );
+		HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_SM_RESETB,   1) );
+
+		PRINT_DEBUG("Changed state to sleep, will change to TX");
+		// Will transmit pending TX data, change to TX state and
+		// unlock spi_mutex
+		lprf_transmit_tx_data(lprf);
+		return 0;
+	}
+
+	// change to RX if not already RX
+	if (!(PHY_SM_STATUS(phy_status) == PHY_SM_RECEIVING))
+	{
+		// Reset some Parts to fix bugs in digital part
+		HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_DEM_RESETB,  0) );
+		HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_DEM_RESETB,  1) );
+		HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_FIFO_RESETB, 0) );
+		HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_FIFO_RESETB, 1) );
+		HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_SM_RESETB,   0) );
+		HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_SM_RESETB,   1) );
+		HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_SM_COMMAND,
+				STATE_CMD_RX) );
+		HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_SM_COMMAND,
+				STATE_CMD_NONE));
+		PRINT_DEBUG("Changed state to RX");
+		lprf_start_rx_polling(lprf);
+	}
+
+	mutex_unlock(&lprf->spi_mutex);
+
+	return 0;
 }
 
 /**
@@ -373,12 +504,12 @@ static int lprf_receive_ieee802154_data(struct lprf *lprf)
 	int ret = 0;
 	int lqi = 0;
 
-	buffer_length = kfifo_len(&lprf->spi_buffer);
+	buffer_length = kfifo_len(&lprf->rx_buffer);
 	buffer = kzalloc(buffer_length * sizeof(*buffer), GFP_KERNEL);
 	if (buffer == 0)
 		return -ENOMEM;
 
-	if(kfifo_out(&lprf->spi_buffer, buffer, buffer_length) != buffer_length) {
+	if(kfifo_out(&lprf->rx_buffer, buffer, buffer_length) != buffer_length) {
 		ret = -EINVAL;
 		goto free_data;
 	}
@@ -438,10 +569,7 @@ static void write_data_to_char_driver(uint8_t *data, int length)
 static void __lprf_read_frame_complete(void *context)
 {
 	struct lprf *lprf = 0;
-	struct spi_transfer *transfer = 0;
-	uint8_t *rx_buf = 0;
 	uint8_t *data_buf = 0;
-	uint8_t *tx_buf = 0;
 	uint8_t phy_status = 0;
 	int length = 0;
 	int bytes_copied = 0;
@@ -450,17 +578,14 @@ static void __lprf_read_frame_complete(void *context)
 	PRINT_DEBUG("Spi transfer completed");
 
 	lprf = context;
-	transfer = list_entry(lprf->spi_message.transfers.next, struct spi_transfer, transfer_list);
-	rx_buf = (uint8_t*) transfer->rx_buf;
-	tx_buf = (uint8_t*) transfer->tx_buf;
-	data_buf = rx_buf + 2; // first two bytes of rx_buf do not contain data
+	data_buf = lprf->spi_rx_buf + 2; // first two bytes of rx_buf do not contain data
 
-	phy_status = rx_buf[0];
-	length = rx_buf[1];
+	phy_status = lprf->spi_rx_buf[0];
+	length = lprf->spi_rx_buf[1];
 
 	preprocess_received_data(data_buf, length);
 	write_data_to_char_driver(data_buf, length);
-	bytes_copied = kfifo_in(&lprf->spi_buffer, data_buf, length);
+	bytes_copied = kfifo_in(&lprf->rx_buffer, data_buf, length);
 
 	wake_up_interruptible(&lprf->wait_for_fifo_data);
 	PRINT_DEBUG("Copied %d bytes of %d received bytes to ring buffer", bytes_copied, length);
@@ -469,123 +594,80 @@ static void __lprf_read_frame_complete(void *context)
 	if (length == FIFO_PACKET_SIZE-1 || (phy_status & SM_mask) == 0xe0)
 	{
 		// note that buffers get reused without deleting old data
-		__lprf_read_frame(lprf);
+		read_lprf_fifo(lprf);
 		return;
 	}
 
 	mutex_unlock(&lprf->spi_mutex);
 	lprf_receive_ieee802154_data(lprf);
-	// todo change to RX and start polling
-
-	spi_transfer_del(transfer);
-	kfree(rx_buf);
-	kfree(tx_buf);
-	kfree(transfer);
+	lprf_change_state(lprf);
 
 }
 
+
 /**
- * Execute one Frame Read Access Command on LPRF-Chip
- *
- * @lprf: lprf structure with hardware information
- *
- * @rx_buf: dynamically allocated buffer for the received data. Make sure that rx_buf is at least
- * LPRF_MAX_BUF + 2 (258 bytes) long (maximum number of received bytes per read access)
- *
- * @tx_buf: dynamically allocated buffer for transmitted data. Has to be the same length as rx_buf.
- *
- * returns zero on success or negative error code. Note that the freeing of the rx and tx buffers
- * is taken care of by __lprf_read_frame_complete().
+ * The Calling function needs to hold the lprf.spi_mutex
  */
-static inline int __lprf_read_frame(struct lprf *lprf)
+static int read_lprf_fifo(struct lprf *lprf)
 {
-	uint8_t *tx_buf = 0;
-	tx_buf = (uint8_t*) list_entry(lprf->spi_message.transfers.next, struct spi_transfer, transfer_list)->tx_buf;
+	lprf->spi_message.complete = __lprf_read_frame_complete;
+	lprf->spi_transfer.len = LPRF_MAX_BUF + 2;
 
-	tx_buf[0] = 0x20;  // Frame_Read_commmand
-
-	PRINT_DEBUG("Do Frame Read");
+	lprf->spi_tx_buf[0] = 0x20;  // Frame_Read_commmand
 
 	return spi_async(lprf->spi_device, &lprf->spi_message);
 }
 
 
-static int read_lprf_fifo(struct lprf *lprf)
-{
-	uint8_t *rx_buf = 0;
-	uint8_t *tx_buf = 0;
-	int ret = 0;
-	struct spi_transfer *transfer = 0;
-
-	ret = mutex_lock_interruptible(&lprf->spi_mutex);
-	if(ret)
-	{
-		PRINT_DEBUG("Function interrupted while waiting for mutex. Mutex could not be locked.");
-	        return ret;
-	}
-
-	// Freeing memory is taken care of by __lprf_read_frame_complete
-	rx_buf = kzalloc(LPRF_MAX_BUF + 2, GFP_KERNEL);
-	if (rx_buf == 0)
-		return -ENOMEM;
-
-	tx_buf = kzalloc(LPRF_MAX_BUF + 2, GFP_KERNEL);
-	if (tx_buf == 0)
-		goto free_rx_buf;
-
-	transfer = kzalloc(sizeof(*transfer), GFP_KERNEL);
-	if (transfer == 0)
-		goto free_tx_buf;
-
-	lprf->spi_message.complete = __lprf_read_frame_complete;
-
-	transfer->rx_buf = rx_buf;
-	transfer->tx_buf = tx_buf;
-	transfer->len = LPRF_MAX_BUF + 2;
-	spi_message_add_tail(transfer, &lprf->spi_message);
-
-	__lprf_read_frame(lprf);
-
-	return 0;
-
-	PRINT_DEBUG("Error during memory allocation in read_lprf_fifo");
-free_tx_buf:
-	kfree(tx_buf);
-free_rx_buf:
-	kfree(rx_buf);
-
-	return -ENOMEM;
-}
-
-
-static enum hrtimer_restart lprf_poll_rx(struct hrtimer *timer)
+static void lprf_poll_rx(struct work_struct *work)
 {
 	uint8_t phy_status = 0;
 	int ret = 0;
-	struct lprf *lprf = container_of(timer, struct lprf, rx_polling_timer);
+	struct lprf *lprf = container_of(work, struct lprf, poll_rx);
+
+	PRINT_DEBUG("SPI Mutex will be locked in lprf_poll_rx");
+	ret = mutex_lock_interruptible(&lprf->spi_mutex);
+	if(ret)
+	{
+		PRINT_DEBUG("lprf_poll_rx interrupted while waiting for mutex. "
+				"Mutex could not be locked.");
+		return;
+	}
 
 	ret = lprf_read_phy_status(lprf);
 	if (ret < 0)
 	{
 		PRINT_DEBUG("ERROR: lprf_read_phy_status returned"
 				" with value %d", ret);
-		return HRTIMER_NORESTART;
+		mutex_unlock(&lprf->spi_mutex);
+		return;
 	}
 
 	phy_status = (uint8_t) ret;
+	PRINT_DEBUG("Poll RX... phy_status = 0x%X", phy_status);
 
 	if( !PHY_FIFO_EMPTY(phy_status) &&
 			(PHY_SM_STATUS(phy_status) == PHY_SM_RECEIVING ||
 			PHY_SM_STATUS(phy_status) == PHY_SM_SLEEP))
 	{
 		PRINT_DEBUG("Data Received, Timer will not be restarted.");
+		lprf_stop_rx_polling(lprf);
 		ret = read_lprf_fifo(lprf);
 		if (ret)
 			PRINT_DEBUG("ERROR: read_lprf_fifo returned "
 					"with value %d", ret);
-		return HRTIMER_NORESTART;
+		// mutex will be unlocked by __lprf_read_frame_complete
+		return;
 	}
 
+	mutex_unlock(&lprf->spi_mutex);
+	return;
+}
+
+static enum hrtimer_restart lprf_start_poll_rx(struct hrtimer *timer)
+{
+	struct lprf *lprf = container_of(timer, struct lprf, rx_polling_timer);
+	schedule_work(&lprf->poll_rx);
 	hrtimer_forward_now(timer, RX_POLLING_INTERVAL);
 	return HRTIMER_RESTART;
 }
@@ -593,52 +675,49 @@ static enum hrtimer_restart lprf_poll_rx(struct hrtimer *timer)
 
 static inline void lprf_start_rx_polling(struct lprf *lprf)
 {
-	hrtimer_init(&lprf->rx_polling_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
-	lprf->rx_polling_timer.function = lprf_poll_rx;
-	hrtimer_start(&lprf->rx_polling_timer, RX_POLLING_INTERVAL, HRTIMER_MODE_REL);
-	PRINT_DEBUG("RX polling started");
+	if (atomic_read(&lprf->rx_polling_active))
+		hrtimer_start(&lprf->rx_polling_timer, RX_POLLING_INTERVAL,
+				HRTIMER_MODE_REL);
 }
-
 
 static inline void lprf_stop_rx_polling(struct lprf *lprf)
 {
 	hrtimer_cancel(&lprf->rx_polling_timer);
-	PRINT_DEBUG("RX polling stopped");
 }
 
 
 static int lprf_start_ieee802154(struct ieee802154_hw *hw)
 {
-	int ret = 0;
 	struct lprf *lprf = hw->priv;
 
-	 // todo: put this in a function with better error management
-	ret = mutex_lock_interruptible(&lprf->spi_mutex);
-	if(ret)
-	{
-	        PRINT_DEBUG("Function interrupted while waiting for mutex. Mutex could not be locked.");
-	        return ret;
-	}
-	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_DEM_RESETB, 0) );
-	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_DEM_RESETB, 1) );
-	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_FIFO_RESETB, 0) );
-	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_FIFO_RESETB, 1) );
-	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_SM_RESETB, 0) );
-	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_SM_RESETB, 1) );
-	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_SM_COMMAND, STATE_CMD_RX) );
-	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_SM_COMMAND, STATE_CMD_NONE));
-
-	mutex_unlock(&lprf->spi_mutex);
-
-	lprf_start_rx_polling(lprf);
+	atomic_set(&lprf->rx_polling_active, 1);
+	lprf_change_state(lprf);
 
 	return 0;
 }
 
 static void lprf_stop_ieee802154(struct ieee802154_hw *hw)
 {
+	int ret = 0;
 	struct lprf *lprf = hw->priv;
+	atomic_set(&lprf->rx_polling_active, 0);
 	lprf_stop_rx_polling(lprf);
+	ret = mutex_lock_interruptible(&lprf->spi_mutex);
+	if(ret)
+	{
+		PRINT_DEBUG("lprf_stop_ieee802154 interrupted while waiting for mutex. "
+				"Mutex could not be locked.");
+		return;
+	}
+	lprf_write_subreg(lprf, SR_SM_COMMAND, STATE_CMD_SLEEP);
+	lprf_write_subreg(lprf, SR_SM_COMMAND, STATE_CMD_NONE);
+	lprf_write_subreg(lprf, SR_DEM_RESETB,  0);
+	lprf_write_subreg(lprf, SR_DEM_RESETB,  1);
+	lprf_write_subreg(lprf, SR_FIFO_RESETB, 0);
+	lprf_write_subreg(lprf, SR_FIFO_RESETB, 1);
+	lprf_write_subreg(lprf, SR_SM_RESETB,   0);
+	lprf_write_subreg(lprf, SR_SM_RESETB,   1);
+	mutex_unlock(&lprf->spi_mutex);
 }
 
 static int lprf_set_ieee802154_channel(struct ieee802154_hw *hw, u8 page, u8 channel)
@@ -659,7 +738,31 @@ static int lprf_set_ieee802154_addr_filter(struct ieee802154_hw *hw,
 
 static int lprf_xmit_ieee802154_async(struct ieee802154_hw *hw, struct sk_buff *skb)
 {
-	PRINT_DEBUG("Called unimplemented function lprf_xmit_ieee802154_async()");
+	int ret = 0;
+	int bytes_copied = 0;
+	struct lprf *lprf = hw->priv;
+	if (!kfifo_is_empty(&lprf->tx_buffer))
+	{
+		PRINT_DEBUG("Wait for TX buffer to get empty");
+		ret = wait_event_interruptible_timeout( lprf->wait_for_frmw_complete,
+				kfifo_is_empty(&lprf->tx_buffer), 1);
+		if (ret < 0)
+			return ret;
+	}
+
+	bytes_copied = kfifo_in(&lprf->tx_buffer, PHY_HEADER, sizeof(PHY_HEADER));
+	if (bytes_copied != sizeof(PHY_HEADER))
+		return -EFBIG;
+
+	bytes_copied = kfifo_in(&lprf->tx_buffer, skb->data, skb->len);
+	if (bytes_copied != skb->len)
+		return -EFBIG;
+
+	ret = lprf_change_state(lprf);
+	if (ret)
+		return ret;
+
+	PRINT_DEBUG("Wrote %d bytes to TX buffer", bytes_copied);
 	return 0;
 }
 
@@ -743,9 +846,16 @@ static int allocate_spi_buffer(struct lprf *lprf)
 {
 	int ret = 0;
 
-	ret = kfifo_alloc(&lprf->spi_buffer, 2024, GFP_KERNEL);
+	ret = kfifo_alloc(&lprf->rx_buffer, 2024, GFP_KERNEL);
 	if (ret)
 		return ret;
+
+	ret = kfifo_alloc(&lprf->tx_buffer, 2024, GFP_KERNEL);
+	if (ret)
+	{
+		kfifo_free(&lprf->rx_buffer);
+		return ret;
+	}
 	return 0;
 }
 
@@ -1011,15 +1121,27 @@ static int lprf_probe(struct spi_device *spi)
 	lprf = ieee802154_hw->priv;
 	lprf->ieee802154_hw = ieee802154_hw;
 
+	// init spi message
 	spi_message_init(&lprf->spi_message);
 	lprf->spi_message.context = lprf;
 	lprf->spi_message.spi = lprf->spi_device;
+	lprf->spi_transfer.len = 2;
+	lprf->spi_transfer.tx_buf = lprf->spi_tx_buf;
+	lprf->spi_transfer.rx_buf = lprf->spi_rx_buf;
+	spi_message_add_tail(&lprf->spi_transfer, &lprf->spi_message);
+
+	hrtimer_init(&lprf->rx_polling_timer, CLOCK_MONOTONIC,
+			HRTIMER_MODE_REL);
+	lprf->rx_polling_timer.function = lprf_start_poll_rx;
 
 	mutex_init(&lprf->spi_mutex);
 	lprf->spi_device = spi;
 	spi_set_drvdata(spi, lprf);
 
+	INIT_WORK(&lprf->poll_rx, lprf_poll_rx);
+
 	init_waitqueue_head(&lprf->wait_for_fifo_data);
+	init_waitqueue_head(&lprf->wait_for_frmw_complete);
 
 	ieee802154_hw->flags = 0;
 	ieee802154_hw->parent = &lprf->spi_device->dev;
@@ -1060,7 +1182,8 @@ static int lprf_probe(struct spi_device *spi)
 unregister_char_device:
 	unregister_char_device(lprf);
 free_spi_buffer:
-	kfifo_free(&lprf->spi_buffer);
+	kfifo_free(&lprf->rx_buffer);
+	kfifo_free(&lprf->tx_buffer);
 free_lprf:
 	ieee802154_free_hw(ieee802154_hw);
 
@@ -1071,7 +1194,9 @@ static int lprf_remove(struct spi_device *spi)
 {
 	struct lprf *lprf = spi_get_drvdata(spi);
 
-	kfifo_free(&lprf->spi_buffer);
+	// todo stop polling timer
+	kfifo_free(&lprf->rx_buffer);
+	kfifo_free(&lprf->tx_buffer);
 	unregister_char_device(lprf);
 
 	ieee802154_unregister_hw(lprf->ieee802154_hw);

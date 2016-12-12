@@ -27,12 +27,13 @@
 #ifndef _LPRF_H_
 #define _LPRF_H_
 
-#define LPRF_DEBUG  // Remove comment to show debug outputs
+//#define LPRF_DEBUG  // Remove comment to show debug outputs
 #define LPRF_INFO  // Remove comment to show info outputs
 #define LPRF_MAX_BUF 256
 #define FRAME_LENGTH 100 // select one byte more to take shifting into account
 #define KBIT_RATE 2000
 #define FIFO_PACKET_SIZE 256
+#define MAX_SPI_BUFFER_SIZE (FIFO_PACKET_SIZE + 2)
 
 #define RX_POLLING_INTERVAL ktime_set(0, 5000000)
 
@@ -86,10 +87,17 @@ struct lprf {
 	struct mutex spi_mutex;
 	struct cdev my_char_dev;
 	struct spi_message spi_message;
+	struct spi_transfer spi_transfer;
+	uint8_t spi_rx_buf[MAX_SPI_BUFFER_SIZE];
+	uint8_t spi_tx_buf[MAX_SPI_BUFFER_SIZE];
 	struct hrtimer rx_polling_timer;
-	DECLARE_KFIFO_PTR(spi_buffer, uint8_t);
+	DECLARE_KFIFO_PTR(rx_buffer, uint8_t);
+	DECLARE_KFIFO_PTR(tx_buffer, uint8_t);
 	struct ieee802154_hw *ieee802154_hw;
+	struct work_struct poll_rx;
+	atomic_t rx_polling_active;
 	wait_queue_head_t wait_for_fifo_data;
+	wait_queue_head_t wait_for_frmw_complete;
 };
 
 
