@@ -895,6 +895,27 @@ static int lprf_detect_device(struct lprf *lprf)
 		PRINT_DEBUG("Chip with invalid Chip ID %X found", chip_id);
 		return -ENODEV;
 	}
+
+
+	lprf->ieee802154_hw->flags = 0;
+
+	lprf->ieee802154_hw->phy->flags = 0; // TODO WPAN_PHY_FLAG_TXPOWER;
+
+	lprf->ieee802154_hw->phy->supported.cca_modes = 0;
+	lprf->ieee802154_hw->phy->supported.cca_opts = 0;
+	lprf->ieee802154_hw->phy->supported.cca_ed_levels = 0;
+	lprf->ieee802154_hw->phy->supported.cca_ed_levels_size = 0;
+	lprf->ieee802154_hw->phy->cca.mode = NL802154_CCA_ENERGY;
+
+	lprf->ieee802154_hw->phy->supported.channels[0] = 0x7FFF800;
+	lprf->ieee802154_hw->phy->current_channel = 11;
+	lprf->ieee802154_hw->phy->symbol_duration = 16;
+	lprf->ieee802154_hw->phy->supported.tx_powers = 0;
+	lprf->ieee802154_hw->phy->supported.tx_powers_size = 0;
+
+	lprf->ieee802154_hw->phy->cca_ed_level = 42;
+	lprf->ieee802154_hw->phy->transmit_power = 42;
+
 	PRINT_DEBUG("LPRF Chip found with Chip ID %X", chip_id);
 	return 0;
 
@@ -1142,7 +1163,6 @@ static int lprf_probe(struct spi_device *spi)
 	init_waitqueue_head(&lprf_char_driver_interface.wait_for_fifo_data);
 	init_waitqueue_head(&lprf->wait_for_frmw_complete);
 
-	ieee802154_hw->flags = 0;
 	ieee802154_hw->parent = &lprf->spi_device->dev;
 	ieee802154_random_extended_addr(&ieee802154_hw->phy->perm_extended_addr);
 
