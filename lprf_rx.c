@@ -278,6 +278,38 @@ static inline int lprf_read_phy_status(struct lprf *lprf)
 }
 
 /*
+ * Calculates a proper vco tune value, that is needed for the pll.
+ * The vco tune value is dependent on the pll frequency and therefore
+ * needs to be changed every time the pll frequency gets changed.
+ *
+ * Returns the vco tune value or zero for invalid channel_number
+ */
+static int calc_vco_tune(int channel_number)
+{
+    switch(channel_number)
+    {
+    case 11: return 237;
+    case 12: return 235;
+    case 13: return 234;
+    case 14: return 232;
+    case 15: return 231;
+    case 16: return 223;
+    case 17: return 222;
+    case 18: return 220;
+    case 19: return 213;
+    case 20: return 212;
+    case 21: return 210;
+    case 22: return 209;
+    case 23: return 207;
+    case 24: return 206;
+    case 25: return 206;
+    case 26: return 204;
+    default: return 0;
+    }
+}
+
+
+/*
  * Calculates the channel center frequency from the channel number as
  * specified in the IEEE 802.15.4 standard. The channel page is assumed
  * to be zero. Returns the frequency in HZ or zero for invalid channel number.
@@ -760,6 +792,7 @@ static int lprf_set_ieee802154_channel(struct ieee802154_hw *hw, u8 page, u8 cha
 	int pll_frac = 0;
 	int rf_freq = 0;
 	int ret = 0;
+	int vco_tune = 0;
 	struct lprf *lprf = hw->priv;
 
 	if (page != 0)
@@ -803,7 +836,9 @@ static int lprf_set_ieee802154_channel(struct ieee802154_hw *hw, u8 page, u8 cha
 	PRINT_DEBUG("Set TX PLL values to int=%d and frac=0x%.6x",
 			pll_int, pll_frac);
 
-	// TODO adjust PLL_VCO_TUNE value
+	vco_tune = calc_vco_tune(channel);
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_PLL_VCO_TUNE, vco_tune) );
+	PRINT_DEBUG("Set VCO TUNE to %d", vco_tune);
 
 unlock_mutex:
 	mutex_unlock(&lprf->spi_mutex);
@@ -1226,6 +1261,10 @@ static int init_lprf_hardware(struct lprf *lprf)
 	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_SM_RESETB, 1) );
 
 	mutex_unlock(&lprf->spi_mutex);
+
+	lprf_set_ieee802154_channel(lprf->ieee802154_hw,
+			lprf->ieee802154_hw->phy->current_page,
+			lprf->ieee802154_hw->phy->current_channel);
 
 	return 0;
 }
