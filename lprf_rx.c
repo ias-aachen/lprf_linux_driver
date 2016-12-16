@@ -277,6 +277,61 @@ static inline int lprf_read_phy_status(struct lprf *lprf)
 
 }
 
+/*
+ * Calculates the channel center frequency from the channel number as
+ * specified in the IEEE 802.15.4 standard. The channel page is assumed
+ * to be zero. Returns the frequency in HZ or zero for invalid channel number.
+ */
+static inline uint32_t calculate_rf_center_freq(int channel_number)
+{
+	if (channel_number >= 11 && channel_number <= 26)
+	{
+		uint32_t f_rf_MHz = 2405 + 5 * (channel_number - 11);
+		return f_rf_MHz * 1000000U;
+	}
+
+	// TODO 800MHz support
+
+	return 0;
+}
+
+
+/*
+ * Calculates the PLL values from the rf_frequency and the
+ * if_frequency. The rf_frequency can be calculated with
+ * calculate_rf_center_freq(). The if_frequency should usually be
+ * 1000000 for RX case and zero for TX case.
+ *
+ * Returns zero on success or -EINVAL for invalid parameters.
+ */
+static int lprf_calculate_pll_values(uint32_t rf_frequency,
+		uint32_t if_frequency,
+		int *int_val, int *frac_val)
+{
+	uint32_t f_lo = 0;
+
+	if (rf_frequency > 2000000000) // use 2.4 GHz frontend
+	{
+		f_lo = ( rf_frequency - if_frequency) / 3 * 2;
+		*int_val = f_lo  / 16000000;
+
+		/*
+		 * The exact formula would actually be
+		 * frac = (f_lo % 16MHz) * 65536 / 1MHz.
+		 * However, this would result in an integer overflow
+		 * and the linux system seems not to support 64bit
+		 * modulo operation. (228/3479) is the smallest error
+		 * possible without integer overflow.
+		 */
+		*frac_val = (f_lo % 16000000) * 228 / 3479;
+		return 0;
+	}
+
+	// TODO 800MHz support
+
+	return -EINVAL;
+}
+
 /**
  * Calling function must hold lprf.spi_mutex
  */
@@ -701,9 +756,58 @@ static void lprf_stop_ieee802154(struct ieee802154_hw *hw)
 
 static int lprf_set_ieee802154_channel(struct ieee802154_hw *hw, u8 page, u8 channel)
 {
+	int pll_int = 0;
+	int pll_frac = 0;
+	int rf_freq = 0;
+	int ret = 0;
+	struct lprf *lprf = hw->priv;
 
-	PRINT_DEBUG("Called unimplemented function lprf_set_ieee802154_channel()");
-	return 0;
+	if (page != 0)
+	{
+		PRINT_DEBUG("Invalid channel page %d.", page);
+		return -EINVAL;
+	}
+
+	rf_freq = calculate_rf_center_freq(channel);
+	PRINT_DEBUG("RF-freq = %u", rf_freq);
+
+	mutex_lock(&lprf->spi_mutex);
+
+	if (ret)
+		goto unlock_mutex;
+
+
+	// for RX
+	ret = lprf_calculate_pll_values(rf_freq, 1000000, &pll_int, &pll_frac);
+
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_RX_CHAN_INT, pll_int) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf,
+			SR_RX_CHAN_FRAC_H, BIT24_H_BYTE(pll_frac)) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf,
+			SR_RX_CHAN_FRAC_M, BIT24_M_BYTE(pll_frac)) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf,
+			SR_RX_CHAN_FRAC_L, BIT24_L_BYTE(pll_frac)) );
+	PRINT_DEBUG("Set RX PLL values to int=%d and frac=0x%.6x",
+			pll_int, pll_frac);
+
+	// for TX
+	ret = lprf_calculate_pll_values(rf_freq, 0, &pll_int, &pll_frac);
+
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_TX_CHAN_INT, pll_int) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf,
+			SR_TX_CHAN_FRAC_H, BIT24_H_BYTE(pll_frac)) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf,
+			SR_TX_CHAN_FRAC_M, BIT24_M_BYTE(pll_frac)) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf,
+			SR_TX_CHAN_FRAC_L, BIT24_L_BYTE(pll_frac)) );
+	PRINT_DEBUG("Set TX PLL values to int=%d and frac=0x%.6x",
+			pll_int, pll_frac);
+
+	// TODO adjust PLL_VCO_TUNE value
+
+unlock_mutex:
+	mutex_unlock(&lprf->spi_mutex);
+	return ret;
 }
 
 static int lprf_set_ieee802154_addr_filter(struct ieee802154_hw *hw,
@@ -1082,11 +1186,11 @@ static int init_lprf_hardware(struct lprf *lprf)
 	// lprf_write_subreg(lprf, SR_RSSI_THRESHOLD, 2);  //--> default value
 
 	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_RX_LENGTH_H,
-			COUNTER_H_BYTE(rx_counter_length)) );
+			BIT24_H_BYTE(rx_counter_length)) );
 	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_RX_LENGTH_M,
-			COUNTER_M_BYTE(rx_counter_length)) );
+			BIT24_M_BYTE(rx_counter_length)) );
 	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_RX_LENGTH_L,
-			COUNTER_L_BYTE(rx_counter_length)) );
+			BIT24_L_BYTE(rx_counter_length)) );
 
 	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_RX_TIMEOUT_H, 0xFF) );
 	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_RX_TIMEOUT_M, 0xFF) );

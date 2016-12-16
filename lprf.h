@@ -60,9 +60,9 @@
 #define PHY_SM_RX_RDY               0x06
 #define PHY_SM_RECEIVING            0x07
 
-#define COUNTER_H_BYTE(c) (((c) & 0xFF0000) >> 16)
-#define COUNTER_M_BYTE(c) (((c) & 0x00FF00) >> 8)
-#define COUNTER_L_BYTE(c) ((c) & 0x0000FF)
+#define BIT24_H_BYTE(c) (((c) & 0xFF0000) >> 16)
+#define BIT24_M_BYTE(c) (((c) & 0x00FF00) >> 8)
+#define BIT24_L_BYTE(c) ((c) & 0x0000FF)
 
 #undef PRINT_DEBUG
 #ifdef LPRF_DEBUG
