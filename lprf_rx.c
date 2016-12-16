@@ -1097,8 +1097,25 @@ static int init_lprf_hardware(struct lprf *lprf)
 	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_CTRL_CLK_C3X_PAD, 1) );
 	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_CTRL_CLK_FALLB, 0) );
 
+	// -> PLL Configuration
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_LDO_PLL_VOUT,   31) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_LDO_VCO_VOUT,   31) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_IREF_PLL_CTRLB, 0  ) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_PLL_VCO_TUNE,   235) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_PLL_LPF_C,      0  ) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_PLL_LPF_R,      9  ) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_RX_CHAN_INT,    100) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_RX_CHAN_FRAC_H, 0  ) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_RX_CHAN_FRAC_M, 0  ) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_RX_CHAN_FRAC_L, 0  ) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_TX_CHAN_INT,    100) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_TX_CHAN_FRAC_H, 0  ) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_TX_CHAN_FRAC_M, 0  ) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_TX_CHAN_FRAC_L, 0  ) );
+
 	// activate 2.4GHz Band
 	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_RX_RF_MODE, 0) );
+	// TODO set to zero, when receiving with pll actually works
 	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_RX_LO_EXT, 1) );
 
 
@@ -1200,7 +1217,6 @@ static int init_lprf_hardware(struct lprf *lprf)
 	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_WAKEUPONRX, 0) );
 	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_WAKEUP_MODES_EN, 0) );
 
-	// -> PLL Configuration
 
 	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_FIFO_RESETB, 0) );
 	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_FIFO_RESETB, 1) );
