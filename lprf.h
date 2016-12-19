@@ -42,10 +42,11 @@
 #define KBIT_RATE 2000
 #define FIFO_PACKET_SIZE 256
 #define MAX_SPI_BUFFER_SIZE (FIFO_PACKET_SIZE + 2)
+#define MAX_STATE_CHANGE_RETRIES 10
 
-#define RX_POLLING_INTERVAL ktime_set(0, 5000000)
-#define RX_RX_INTERVAL ktime_set(0, 500000)
-#define TX_RX_INTERVAL ktime_set(0, 5000000)
+#define RX_POLLING_INTERVAL ktime_set(0, 1)
+#define RX_RX_INTERVAL ktime_set(0, 1)
+#define TX_RX_INTERVAL ktime_set(0, 1)
 
 #define REGR 0x80 // Register read access command
 #define REGW 0xc0 // Register write access command
@@ -71,14 +72,14 @@
 
 #undef PRINT_DEBUG
 #ifdef LPRF_DEBUG
-	#define PRINT_DEBUG(fmt, args...) printk( KERN_DEBUG "lprf: " fmt "\n", ## args)
+	#define PRINT_DEBUG(fmt, args...) printk( KERN_CRIT "lprf: " fmt "\n", ## args)
 #else
 	#define PRINT_DEBUG(fmt, args...)
 #endif
 
 #undef PRINT_KRIT
 #ifdef LPRF_DEBUG_KRIT
-	#define PRINT_KRIT(fmt, args...) printk( KERN_DEBUG "lprf: " fmt "\n", ## args)
+	#define PRINT_KRIT(fmt, args...) printk( KERN_CRIT "lprf: " fmt "\n", ## args)
 #else
 	#define PRINT_KRIT(fmt, args...)
 #endif
