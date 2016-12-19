@@ -86,28 +86,4 @@
 	}
 
 
-/**
- * @ spi_message: And spi_message struct that can be used for asynchronous
- * 	spi transfers. Make sure to lock spi_mutex and set the correct callback
- * 	when using spi_message.
- */
-struct lprf {
-	struct spi_device *spi_device;
-	struct regmap *regmap;
-	struct mutex spi_mutex;
-	struct cdev my_char_dev;
-	struct spi_message spi_message;
-	struct spi_transfer spi_transfer;
-	uint8_t spi_rx_buf[MAX_SPI_BUFFER_SIZE];
-	uint8_t spi_tx_buf[MAX_SPI_BUFFER_SIZE];
-	struct hrtimer rx_polling_timer;
-	DECLARE_KFIFO_PTR(rx_buffer, uint8_t);
-	DECLARE_KFIFO_PTR(tx_buffer, uint8_t);
-	struct ieee802154_hw *ieee802154_hw;
-	struct work_struct poll_rx;
-	atomic_t rx_polling_active;
-	wait_queue_head_t wait_for_frmw_complete;
-};
-
-
 #endif // _LPRF_H_

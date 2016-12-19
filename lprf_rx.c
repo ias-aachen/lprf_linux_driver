@@ -49,13 +49,14 @@
 #include "lprf.h"
 #include "lprf_registers.h"
 
+struct lprf_local;
 
-static int init_lprf_hardware(struct lprf *lprf);
-static inline void lprf_start_rx_polling(struct lprf *lprf,
+static int init_lprf_hardware(struct lprf_local *lprf);
+static inline void lprf_start_rx_polling(struct lprf_local *lprf,
 		ktime_t first_interval);
-static inline void lprf_stop_rx_polling(struct lprf *lprf);
-static int lprf_transmit_tx_data(struct lprf *lprf);
-static int read_lprf_fifo(struct lprf *lprf);
+static inline void lprf_stop_rx_polling(struct lprf_local *lprf);
+static int lprf_transmit_tx_data(struct lprf_local *lprf);
+static int read_lprf_fifo(struct lprf_local *lprf);
 
 static int lprf_start_ieee802154(struct ieee802154_hw *hw);
 static void lprf_stop_ieee802154(struct ieee802154_hw *hw);
@@ -70,6 +71,29 @@ static const uint8_t PHY_HEADER[] = {0x55, 0x55, 0x55, 0x55, 0xe5};
 
 struct lprf_platform_data {
 	int some_custom_value;
+};
+
+/**
+ * @ spi_message: And spi_message struct that can be used for asynchronous
+ * 	spi transfers. Make sure to lock spi_mutex and set the correct callback
+ * 	when using spi_message.
+ */
+struct lprf_local {
+	struct spi_device *spi_device;
+	struct regmap *regmap;
+	struct mutex spi_mutex;
+	struct cdev my_char_dev;
+	struct spi_message spi_message;
+	struct spi_transfer spi_transfer;
+	uint8_t spi_rx_buf[MAX_SPI_BUFFER_SIZE];
+	uint8_t spi_tx_buf[MAX_SPI_BUFFER_SIZE];
+	struct hrtimer rx_polling_timer;
+	DECLARE_KFIFO_PTR(rx_buffer, uint8_t);
+	DECLARE_KFIFO_PTR(tx_buffer, uint8_t);
+	struct ieee802154_hw *ieee802154_hw;
+	struct work_struct poll_rx;
+	atomic_t rx_polling_active;
+	wait_queue_head_t wait_for_frmw_complete;
 };
 
 struct lprf_char_driver_interface {
@@ -214,7 +238,7 @@ static inline void reverse_bit_order_and_invert_bits(uint8_t *byte)
  * Every function calling lprf_read_register needs to hold the
  * lprf.spi_mutex.
  */
-static inline int lprf_read_register(struct lprf *lprf, unsigned int address, unsigned int *value)
+static inline int lprf_read_register(struct lprf_local *lprf, unsigned int address, unsigned int *value)
 {
 	int ret = 0;
 	ret = regmap_read(lprf->regmap, address, value);
@@ -226,7 +250,7 @@ static inline int lprf_read_register(struct lprf *lprf, unsigned int address, un
  * Every function calling lprf_write_register needs to hold the
  * lprf.spi_mutex.
  */
-static inline int lprf_write_register(struct lprf *lprf, unsigned int address, unsigned int value)
+static inline int lprf_write_register(struct lprf_local *lprf, unsigned int address, unsigned int value)
 {
 	int ret = 0;
 	ret = regmap_write(lprf->regmap, address, value);
@@ -238,7 +262,7 @@ static inline int lprf_write_register(struct lprf *lprf, unsigned int address, u
  * Every function calling lprf_read_subreg needs to hold the
  * lprf.spi_mutex.
  */
-static inline int lprf_read_subreg(struct lprf *lprf,
+static inline int lprf_read_subreg(struct lprf_local *lprf,
 		unsigned int addr, unsigned int mask,
 		unsigned int shift, unsigned int *data)
 {
@@ -252,7 +276,7 @@ static inline int lprf_read_subreg(struct lprf *lprf,
  * Every function calling lprf_write_subreg needs to hold the
  * lprf.spi_mutex.
  */
-static inline int lprf_write_subreg(struct lprf *lprf,
+static inline int lprf_write_subreg(struct lprf_local *lprf,
 		unsigned int addr, unsigned int mask,
 		unsigned int shift, unsigned int data)
 {
@@ -264,7 +288,7 @@ static inline int lprf_write_subreg(struct lprf *lprf,
  * Read the phy_status byte. The calling function needs to hold the
  * lprf.spi_mutex
  */
-static inline int lprf_read_phy_status(struct lprf *lprf)
+static inline int lprf_read_phy_status(struct lprf_local *lprf)
 {
 	uint8_t rx_buf[] = {0};
 	int ret = 0;
@@ -369,7 +393,7 @@ static int lprf_calculate_pll_values(uint32_t rf_frequency,
  */
 static void __lprf_frame_write_complete(void *context)
 {
-	struct lprf *lprf = 0;
+	struct lprf_local *lprf = 0;
 
 	PRINT_DEBUG("Spi Frame Write completed");
 
@@ -395,7 +419,7 @@ static void __lprf_frame_write_complete(void *context)
 /**
  * Calling function must hold lprf.spi_mutex
  */
-static int lprf_transmit_tx_data(struct lprf *lprf)
+static int lprf_transmit_tx_data(struct lprf_local *lprf)
 {
 	int total_length = 0;
 	int bytes_copied = 0;
@@ -423,7 +447,7 @@ static int lprf_transmit_tx_data(struct lprf *lprf)
 
 }
 
-static int lprf_change_state(struct lprf *lprf)
+static int lprf_change_state(struct lprf_local *lprf)
 {
 	uint8_t phy_status = 0;
 	int ret = 0;
@@ -565,7 +589,7 @@ static int find_SFD_and_shift_data(uint8_t *data, int *data_length,
 	return shift;
 }
 
-static int lprf_receive_ieee802154_data(struct lprf *lprf)
+static int lprf_receive_ieee802154_data(struct lprf_local *lprf)
 {
 	int buffer_length = 0;
 	int frame_length = 0;
@@ -638,7 +662,7 @@ static void write_data_to_char_driver(uint8_t *data, int length)
 
 static void __lprf_read_frame_complete(void *context)
 {
-	struct lprf *lprf = 0;
+	struct lprf_local *lprf = 0;
 	uint8_t *data_buf = 0;
 	uint8_t phy_status = 0;
 	int length = 0;
@@ -685,7 +709,7 @@ static void __lprf_read_frame_complete(void *context)
 /**
  * The Calling function needs to hold the lprf.spi_mutex
  */
-static int read_lprf_fifo(struct lprf *lprf)
+static int read_lprf_fifo(struct lprf_local *lprf)
 {
 	lprf->spi_message.complete = __lprf_read_frame_complete;
 	lprf->spi_transfer.len = LPRF_MAX_BUF + 2;
@@ -700,7 +724,7 @@ static void lprf_poll_rx(struct work_struct *work)
 {
 	uint8_t phy_status = 0;
 	int ret = 0;
-	struct lprf *lprf = container_of(work, struct lprf, poll_rx);
+	struct lprf_local *lprf = container_of(work, struct lprf_local, poll_rx);
 
 	PRINT_KRIT("SPI Mutex will be locked in lprf_poll_rx");
 	if (!mutex_trylock(&lprf->spi_mutex))
@@ -738,14 +762,14 @@ static void lprf_poll_rx(struct work_struct *work)
 
 static enum hrtimer_restart lprf_start_poll_rx(struct hrtimer *timer)
 {
-	struct lprf *lprf = container_of(timer, struct lprf, rx_polling_timer);
+	struct lprf_local *lprf = container_of(timer, struct lprf_local, rx_polling_timer);
 	schedule_work(&lprf->poll_rx);
 	hrtimer_forward_now(timer, RX_POLLING_INTERVAL);
 	return HRTIMER_RESTART;
 }
 
 
-static inline void lprf_start_rx_polling(struct lprf *lprf,
+static inline void lprf_start_rx_polling(struct lprf_local *lprf,
 		ktime_t first_interval)
 {
 	if (atomic_read(&lprf->rx_polling_active))
@@ -753,7 +777,7 @@ static inline void lprf_start_rx_polling(struct lprf *lprf,
 				HRTIMER_MODE_REL);
 }
 
-static inline void lprf_stop_rx_polling(struct lprf *lprf)
+static inline void lprf_stop_rx_polling(struct lprf_local *lprf)
 {
 	hrtimer_cancel(&lprf->rx_polling_timer);
 }
@@ -761,7 +785,7 @@ static inline void lprf_stop_rx_polling(struct lprf *lprf)
 
 static int lprf_start_ieee802154(struct ieee802154_hw *hw)
 {
-	struct lprf *lprf = hw->priv;
+	struct lprf_local *lprf = hw->priv;
 
 	atomic_set(&lprf->rx_polling_active, 1);
 	lprf_change_state(lprf);
@@ -771,7 +795,7 @@ static int lprf_start_ieee802154(struct ieee802154_hw *hw)
 
 static void lprf_stop_ieee802154(struct ieee802154_hw *hw)
 {
-	struct lprf *lprf = hw->priv;
+	struct lprf_local *lprf = hw->priv;
 	atomic_set(&lprf->rx_polling_active, 0);
 	lprf_stop_rx_polling(lprf);
 	mutex_lock(&lprf->spi_mutex);
@@ -793,7 +817,7 @@ static int lprf_set_ieee802154_channel(struct ieee802154_hw *hw, u8 page, u8 cha
 	int rf_freq = 0;
 	int ret = 0;
 	int vco_tune = 0;
-	struct lprf *lprf = hw->priv;
+	struct lprf_local *lprf = hw->priv;
 
 	if (page != 0)
 	{
@@ -858,7 +882,7 @@ static int lprf_xmit_ieee802154_async(struct ieee802154_hw *hw, struct sk_buff *
 {
 	int ret = 0;
 	int bytes_copied = 0;
-	struct lprf *lprf = hw->priv;
+	struct lprf_local *lprf = hw->priv;
 	if (!kfifo_is_empty(&lprf->tx_buffer))
 	{
 		PRINT_DEBUG("Wait for TX buffer to get empty");
@@ -893,9 +917,9 @@ static int lprf_ieee802154_energy_detection(struct ieee802154_hw *hw, u8 *level)
 
 int lprf_open_char_device(struct inode *inode, struct file *filp)
 {
-	struct lprf *lprf = 0;
+	struct lprf_local *lprf = 0;
 	int ret = 0;
-	lprf = container_of(inode->i_cdev, struct lprf, my_char_dev);    //http://stackoverflow.com/questions/15832301/understanding-container-of-macro-in-linux-kerne0;
+	lprf = container_of(inode->i_cdev, struct lprf_local, my_char_dev);    //http://stackoverflow.com/questions/15832301/understanding-container-of-macro-in-linux-kerne0;
 	filp->private_data = lprf;
 
 	if (atomic_inc_return(&lprf_char_driver_interface.is_open) != 1)
@@ -918,8 +942,8 @@ int lprf_open_char_device(struct inode *inode, struct file *filp)
 
 int lprf_release_char_device(struct inode *inode, struct file *filp)
 {
-	struct lprf *lprf;
-	lprf = container_of(inode->i_cdev, struct lprf, my_char_dev);
+	struct lprf_local *lprf;
+	lprf = container_of(inode->i_cdev, struct lprf_local, my_char_dev);
 
 	kfifo_free(&lprf_char_driver_interface.data_buffer);
 	atomic_dec(&lprf_char_driver_interface.is_open);
@@ -970,7 +994,7 @@ ssize_t lprf_write_char_device(struct file *filp, const char __user *buf,
 	int bytes_to_copy = 0;
 	int bytes_copied = 0;
 	int ret = 0;
-	struct lprf *lprf = filp->private_data;
+	struct lprf_local *lprf = filp->private_data;
 
 	free_buffer_size = kfifo_avail(&lprf->tx_buffer);
 	bytes_to_copy = free_buffer_size < count ? free_buffer_size : count;
@@ -990,7 +1014,7 @@ ssize_t lprf_write_char_device(struct file *filp, const char __user *buf,
 }
 
 
-static int allocate_spi_buffer(struct lprf *lprf)
+static int allocate_spi_buffer(struct lprf_local *lprf)
 {
 	int ret = 0;
 
@@ -1015,7 +1039,7 @@ static int allocate_spi_buffer(struct lprf *lprf)
  *
  * returns 0 on success, a negative error number on error.
  */
-static int lprf_detect_device(struct lprf *lprf)
+static int lprf_detect_device(struct lprf_local *lprf)
 {
 	int rx_buf = 0, ret=0, chip_id = 0;
 
@@ -1077,7 +1101,7 @@ static const struct file_operations lprf_fops = {
  * Registers the LPRF-Chip as char-device. Make sure to execute this function only
  * after the chip has been fully initialized and is ready to use.
  */
-static int register_char_device(struct lprf *lprf)
+static int register_char_device(struct lprf_local *lprf)
 {
 	int ret = 0;
 	dev_t dev_number = 0;
@@ -1104,7 +1128,7 @@ unregister:
 	return ret;
 }
 
-static inline void unregister_char_device(struct lprf *lprf)
+static inline void unregister_char_device(struct lprf_local *lprf)
 {
 	dev_t dev_number = lprf->my_char_dev.dev;
 	cdev_del(&lprf->my_char_dev);
@@ -1112,7 +1136,7 @@ static inline void unregister_char_device(struct lprf *lprf)
 	PRINT_DEBUG( "Removed Char Device");
 }
 
-static int init_lprf_hardware(struct lprf *lprf)
+static int init_lprf_hardware(struct lprf_local *lprf)
 {
 	int ret = 0;
 	int rx_counter_length = get_rx_length_counter_H(KBIT_RATE, FRAME_LENGTH);
@@ -1274,7 +1298,7 @@ static int lprf_probe(struct spi_device *spi)
 	u32 custom_value = 0;
 	int ret = 0;
 	struct lprf_platform_data *pdata = 0;
-	struct lprf *lprf = 0;
+	struct lprf_local *lprf = 0;
 	struct ieee802154_hw *ieee802154_hw = 0;
 	PRINT_DEBUG( "call lprf_probe");
 
@@ -1370,7 +1394,7 @@ free_lprf:
 
 static int lprf_remove(struct spi_device *spi)
 {
-	struct lprf *lprf = spi_get_drvdata(spi);
+	struct lprf_local *lprf = spi_get_drvdata(spi);
 
 	// todo stop polling timer
 	kfifo_free(&lprf->rx_buffer);
