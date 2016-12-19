@@ -47,6 +47,11 @@
 #define RX_RX_INTERVAL ktime_set(0, 500000)
 #define TX_RX_INTERVAL ktime_set(0, 5000000)
 
+#define REGR 0x80 // Register read access command
+#define REGW 0xc0 // Register write access command
+#define FRMR 0x20 // Frame read access command
+#define FRMW 0x60 // Frame write access command
+
 #define PHY_SM_STATUS(phy_status)   (((phy_status) & 0xe0) >> 5)
 #define PHY_SM_ENABLE(phy_status)   (((phy_status) & 0x10) >> 4)
 #define PHY_FIFO_EMPTY(phy_status)  (((phy_status) & 0x08) >> 3)

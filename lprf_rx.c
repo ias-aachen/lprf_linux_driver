@@ -73,6 +73,31 @@ struct lprf_platform_data {
 	int some_custom_value;
 };
 
+
+/*
+ * lprf_phy_status is used for the async spi tranfer to get status
+ * information of the chip in lprf_phy_status_async().
+ *
+ * @spi_device: spi device to use
+ * @spi_message: spi_message for the spi transfer
+ * @buf: buffer for the spi transfer
+ */
+struct lprf_phy_status {
+        struct spi_device *spi_device;
+        struct spi_message spi_message;
+        struct spi_transfer spi_transfer;
+        uint8_t buf[1];
+};
+
+struct lprf_state_change {
+	struct lprf_local *lprf;
+        struct spi_message spi_message;
+        struct spi_transfer spi_transfer;
+        uint8_t buf[MAX_SPI_BUFFER_SIZE];
+
+        uint8_t to_state;
+};
+
 /**
  * @ spi_message: And spi_message struct that can be used for asynchronous
  * 	spi transfers. Make sure to lock spi_mutex and set the correct callback
@@ -94,6 +119,9 @@ struct lprf_local {
 	struct work_struct poll_rx;
 	atomic_t rx_polling_active;
 	wait_queue_head_t wait_for_frmw_complete;
+
+	struct lprf_phy_status phy_status;
+	struct lprf_state_change state_change;
 };
 
 struct lprf_char_driver_interface {
@@ -299,6 +327,27 @@ static inline int lprf_read_phy_status(struct lprf_local *lprf)
 
 	return rx_buf[0];
 
+}
+
+static void lprf_phy_status_async(struct lprf_phy_status *phy_status,
+		void (*complete)(void *context))
+{
+	phy_status->spi_message.complete = complete;
+	spi_async(phy_status->spi_device, &phy_status->spi_message);
+	// TODO handle spi async error
+}
+
+static void lprf_async_write_register(struct lprf_state_change *state_change,
+		uint8_t address, uint8_t value,
+		void (*complete)(void *context))
+{
+	state_change->buf[0] = REGW;
+	state_change->buf[1] = address;
+	state_change->buf[2] = value;
+	state_change->spi_transfer.len = 3;
+	state_change->spi_message.complete = complete;
+	spi_async(state_change->lprf->spi_device, &state_change->spi_message);
+	// TODO handle spi async error
 }
 
 /*
@@ -781,7 +830,6 @@ static inline void lprf_stop_rx_polling(struct lprf_local *lprf)
 {
 	hrtimer_cancel(&lprf->rx_polling_timer);
 }
-
 
 static int lprf_start_ieee802154(struct ieee802154_hw *hw)
 {
@@ -1332,6 +1380,25 @@ static int lprf_probe(struct spi_device *spi)
 	lprf->spi_transfer.tx_buf = lprf->spi_tx_buf;
 	lprf->spi_transfer.rx_buf = lprf->spi_rx_buf;
 	spi_message_add_tail(&lprf->spi_transfer, &lprf->spi_message);
+
+	lprf->phy_status.spi_device = lprf->spi_device;
+	spi_message_init(&lprf->phy_status.spi_message);
+	lprf->phy_status.spi_message.context = lprf;
+	lprf->phy_status.spi_message.spi = lprf->spi_device;
+	lprf->phy_status.spi_transfer.len = 1;
+	lprf->phy_status.spi_transfer.tx_buf = lprf->phy_status.buf;
+	lprf->phy_status.spi_transfer.rx_buf = lprf->phy_status.buf;
+	spi_message_add_tail(&lprf->phy_status.spi_transfer,
+			&lprf->phy_status.spi_message);
+
+	spi_message_init(&lprf->state_change.spi_message);
+	lprf->state_change.spi_message.context = lprf;
+	lprf->state_change.spi_message.spi = lprf->spi_device;
+	lprf->state_change.spi_transfer.len = 3;
+	lprf->state_change.spi_transfer.tx_buf = lprf->state_change.buf;
+	lprf->state_change.spi_transfer.rx_buf = lprf->state_change.buf;
+	spi_message_add_tail(&lprf->state_change.spi_transfer,
+			&lprf->state_change.spi_message);
 
 	hrtimer_init(&lprf->rx_polling_timer, CLOCK_MONOTONIC,
 			HRTIMER_MODE_REL);
