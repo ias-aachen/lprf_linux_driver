@@ -52,6 +52,7 @@
 struct lprf_local;
 
 static int init_lprf_hardware(struct lprf_local *lprf);
+static void lprf_poll_rx(void *context);
 static inline void lprf_start_rx_polling_timer(struct lprf_local *lprf,
 		ktime_t first_interval);
 static inline void lprf_stop_rx_polling(struct lprf_local *lprf);
@@ -67,7 +68,8 @@ static int lprf_set_ieee802154_addr_filter(struct ieee802154_hw *hw,
 static int lprf_xmit_ieee802154_async(struct ieee802154_hw *hw, struct sk_buff *skb);
 static int lprf_ieee802154_energy_detection(struct ieee802154_hw *hw, u8 *level);
 
-static const uint8_t PHY_HEADER[] = {0x55, 0x55, 0x55, 0x55, 0xe5};
+static const uint8_t SYNC_HEADER[] = {0x55, 0x55, 0x55, 0x55, 0xe5};
+static const int PHY_HEADER_LENGTH = 1;
 
 struct lprf_platform_data {
 	int some_custom_value;
@@ -110,6 +112,8 @@ struct lprf_state_change {
 
         uint8_t sm_main_value;
         uint8_t dem_main_value;
+
+        struct hrtimer tx_timer;
 };
 
 
@@ -118,19 +122,21 @@ struct lprf_local {
 	struct regmap *regmap;
 	struct cdev my_char_dev;
 	struct hrtimer rx_polling_timer;
-	DECLARE_KFIFO_PTR(rx_buffer, uint8_t);
-	DECLARE_KFIFO_PTR(tx_buffer, uint8_t);
 	struct ieee802154_hw *ieee802154_hw;
 	atomic_t rx_polling_active;
 
 	struct lprf_phy_status phy_status;
 	struct lprf_state_change state_change;
+
+	struct sk_buff *tx_skb;
+	bool skb_from_char_driver;
 };
 
 struct lprf_char_driver_interface {
 	atomic_t is_open;
 	DECLARE_KFIFO_PTR(data_buffer, uint8_t);
-	wait_queue_head_t wait_for_fifo_data;
+	wait_queue_head_t wait_for_rx_data;
+	wait_queue_head_t wait_for_tx_ready;
 
 } lprf_char_driver_interface;
 
@@ -452,15 +458,59 @@ static int lprf_calculate_pll_values(uint32_t rf_frequency,
 	return -EINVAL;
 }
 
+
+static void lprf_tx_complete(struct lprf_local *lprf, uint8_t phy_status)
+{
+	if (lprf->skb_from_char_driver)
+		kfree_skb(lprf->tx_skb);
+	else
+		ieee802154_xmit_complete(lprf->ieee802154_hw, lprf->tx_skb, false);
+	lprf->skb_from_char_driver = false;
+	lprf->tx_skb = 0;
+	lprf->state_change.transition_in_progress = false;
+	wake_up(&lprf_char_driver_interface.wait_for_tx_ready);
+	lprf_poll_rx(lprf);
+	PRINT_KRIT("TX data send successfully");
+}
+
+
+static void lprf_test_tx_complete(void *context)
+{
+	struct lprf_local *lprf = context;
+	struct lprf_state_change *state_change = &lprf->state_change;
+	uint8_t phy_status = lprf->phy_status.rx_buf[0];
+
+	if (PHY_SM_STATUS(phy_status) == PHY_SM_SENDING) {
+		hrtimer_start(&state_change->tx_timer, RETRY_INTERVAL,
+					HRTIMER_MODE_REL);
+		return;
+	}
+	lprf_tx_complete(lprf, phy_status);
+}
+
+static enum hrtimer_restart lprf_start_test_tx_complete(struct hrtimer *timer)
+{
+	int rc = 0;
+	struct lprf_state_change *state_change = container_of(
+			timer, struct lprf_state_change, tx_timer);
+	struct lprf_local *lprf = state_change->lprf;
+
+	rc = lprf_phy_status_async(&lprf->phy_status, lprf_test_tx_complete);
+	if (rc)
+		hrtimer_start(&state_change->tx_timer, RETRY_INTERVAL,
+							HRTIMER_MODE_REL);
+
+	PRINT_KRIT("lprf_start_test_tx_complete");
+	return HRTIMER_NORESTART;
+}
+
 static void lprf_tx_change_complete(void *context)
 {
 	struct lprf_local *lprf = context;
 	struct lprf_state_change *state_change = &lprf->state_change;
 
-	state_change->transition_in_progress = false;
-	lprf_start_rx_polling_timer(lprf, TX_RX_INTERVAL);
-
-	PRINT_DEBUG("State change to TX completed successfully");
+	hrtimer_start(&state_change->tx_timer, TX_RX_INTERVAL,
+			HRTIMER_MODE_REL);
 }
 
 
@@ -469,55 +519,53 @@ static void __lprf_frame_write_complete(void *context)
 	struct lprf_local *lprf = context;
 	struct lprf_state_change *state_change = &lprf->state_change;
 
-	PRINT_DEBUG("Spi Frame Write completed");
-
-	if (!kfifo_is_empty(&lprf->tx_buffer))
-	{
-		PRINT_DEBUG("Still data in TX buffer to be transmitted.");
-		lprf_start_frame_write(lprf);
-		return;
-	}
+	PRINT_KRIT("Spi Frame Write completed");
 
 	lprf_async_write_register(state_change, RG_SM_MAIN,
 			lprf_subreg(state_change->sm_main_value,
 			SR_SM_COMMAND, STATE_CMD_TX),
 			lprf_tx_change_complete);
-	PRINT_DEBUG("Change state to TX");
+	PRINT_KRIT("Change state to TX");
 }
 
 
 static int lprf_start_frame_write(struct lprf_local *lprf)
 {
 	int ret = 0;
-	int total_length = 0;
-	int bytes_copied = 0;
-	uint8_t buffer_length = 0;
+	int payload_length = 0;
+	int frame_length = 0;
+	int shr_index, phr_index, payload_index;
 	struct lprf_state_change *state_change = &lprf->state_change;
 
-	total_length = (kfifo_len(&lprf->tx_buffer));
-	buffer_length = (uint8_t) (total_length < LPRF_MAX_BUF - 1 ?
-			total_length : LPRF_MAX_BUF - 1);
+	payload_length = lprf->tx_skb->len;
+	frame_length = sizeof(SYNC_HEADER) +
+			PHY_HEADER_LENGTH +
+			payload_length;
 
+	shr_index = 2;
+	phr_index = shr_index + sizeof(SYNC_HEADER);
+	payload_index = phr_index + PHY_HEADER_LENGTH;
 
 	state_change->tx_buf[0] = FRMW;
-	state_change->tx_buf[1] = buffer_length;
-	bytes_copied = kfifo_out(&lprf->tx_buffer, state_change->tx_buf + 2,
-			buffer_length);
-	if (bytes_copied != buffer_length)
-		PRINT_DEBUG("Warning: Only %d/%d bytes copied from Tx buffer",
-				bytes_copied, buffer_length);
+	state_change->tx_buf[1] = frame_length;
+
+	memcpy(state_change->tx_buf + shr_index,
+			SYNC_HEADER, sizeof(SYNC_HEADER));
+
+	state_change->tx_buf[phr_index] = payload_length;
+
+	memcpy(state_change->tx_buf + payload_index,
+			lprf->tx_skb->data, lprf->tx_skb->len);
 
 	state_change->spi_message.complete = __lprf_frame_write_complete;
-
-	state_change->spi_transfer.len = buffer_length;
+	state_change->spi_transfer.len = frame_length;
 
 	ret = spi_async(lprf->spi_device, &state_change->spi_message);
 	if (ret)
-		PRINT_DEBUG("Async_spi returned with error code %d", ret);
+		PRINT_KRIT("Async_spi returned with error code %d", ret);
 	return 0;
-
-
 }
+
 
 void lprf_rx_change_complete(void *context)
 {
@@ -609,7 +657,7 @@ static void lprf_async_state_change(void *context)
 	}
 
 	// If TX data available change to TX
-	if (!kfifo_is_empty(&lprf->tx_buffer))
+	if (lprf->tx_skb)
 	{
 		//lprf_stop_rx_polling(lprf);
 		state_change->transition_in_progress = true;
@@ -645,7 +693,7 @@ static enum hrtimer_restart lprf_delayed_state_change(struct hrtimer *timer)
 	rc = lprf_phy_status_async(&lprf->phy_status,
 			lprf_async_state_change);
 	if (rc)
-		hrtimer_start(&state_change->timer, STATE_RETRY_INTERVAL,
+		hrtimer_start(&state_change->timer, RETRY_INTERVAL,
 				HRTIMER_MODE_REL);
 
 	return HRTIMER_NORESTART;
@@ -735,57 +783,42 @@ static int find_SFD_and_shift_data(uint8_t *data, int *data_length,
 	return shift;
 }
 
-static int lprf_receive_ieee802154_data(struct lprf_local *lprf)
+static int lprf_receive_ieee802154_data(struct lprf_local *lprf,
+		uint8_t *buffer, int buffer_length)
 {
-	int buffer_length = 0;
 	int frame_length = 0;
-	uint8_t *buffer = 0;
 	struct sk_buff *skb;
 	int ret = 0;
 	int lqi = 0;
 
-	buffer_length = kfifo_len(&lprf->rx_buffer);
-	buffer = kzalloc(buffer_length * sizeof(*buffer), GFP_KERNEL); // TODO should not be called in asynchronous context, because kzalloc can sleep
-	if (buffer == 0)
-		return -ENOMEM;
 
-	if(kfifo_out(&lprf->rx_buffer, buffer, buffer_length) != buffer_length) {
-		ret = -EINVAL;
-		goto free_data;
-	}
 
 	if (find_SFD_and_shift_data(buffer, &buffer_length, 0xe5, 4) == 0) {
 		PRINT_KRIT("SFD not found, ignoring frame");
-		ret = -EINVAL;
-		goto free_data;
+		return -EINVAL;
 	}
 
 	frame_length = buffer[0];
 
 	if (!ieee802154_is_valid_psdu_len(frame_length)) {
 		PRINT_KRIT("Frame with invalid length %d received", frame_length);
-		ret = -EINVAL;
-		goto free_data;
+		return -EINVAL;
 	}
 
 	if (frame_length > buffer_length) {
 		PRINT_KRIT("frame length greater than received data length");
-		ret = -EINVAL;
-		goto free_data;
+		return -EINVAL;
 	}
 	PRINT_KRIT("Length of received frame is %d", frame_length);
 
 	skb = dev_alloc_skb(frame_length);
 	if (!skb) {
-		ret = -ENOMEM;
-		goto free_data;
+		return -ENOMEM;
 	}
 
 	memcpy(skb_put(skb, frame_length), buffer + 1, frame_length);
 	ieee802154_rx_irqsafe(lprf->ieee802154_hw, skb, lqi);
 
-free_data:
-	kfree(buffer);
 	return ret;
 }
 
@@ -812,8 +845,6 @@ static void __lprf_read_frame_complete(void *context)
 	uint8_t phy_status = 0;
 	int rc;
 	int length = 0;
-	int bytes_copied = 0;
-	static const uint8_t SM_mask = 0xe0;
 	struct lprf_local *lprf = context;
 	struct lprf_state_change *state_change = &lprf->state_change;
 
@@ -826,23 +857,12 @@ static void __lprf_read_frame_complete(void *context)
 
 	preprocess_received_data(data_buf, length);
 	write_data_to_char_driver(data_buf, length);
-	bytes_copied = kfifo_in(&lprf->rx_buffer, data_buf, length);
+	wake_up(&lprf_char_driver_interface.wait_for_rx_data);
 
-	wake_up(&lprf_char_driver_interface.wait_for_fifo_data);
-	PRINT_KRIT("Copied %d bytes of %d received bytes to ring buffer", bytes_copied, length);
-
-	// LPRF FIFO not empty or still receiving -> get more data
-	if (length == FIFO_PACKET_SIZE-1 || (phy_status & SM_mask) == 0xe0)
-	{
-		// note that buffers get reused without deleting old data
-		read_lprf_fifo(lprf);
-		return;
-	}
-
-	lprf_receive_ieee802154_data(lprf);
+	lprf_receive_ieee802154_data(lprf, data_buf, length);
 	rc = lprf_phy_status_async(&lprf->phy_status, lprf_async_state_change);
 	if (rc)
-		hrtimer_start(&state_change->timer, STATE_RETRY_INTERVAL,
+		hrtimer_start(&state_change->timer, RETRY_INTERVAL,
 				HRTIMER_MODE_REL);
 
 }
@@ -1021,28 +1041,23 @@ static int lprf_set_ieee802154_addr_filter(struct ieee802154_hw *hw,
 
 static int lprf_xmit_ieee802154_async(struct ieee802154_hw *hw, struct sk_buff *skb)
 {
-	int bytes_copied = 0;
 	int rc = 0;
 	struct lprf_local *lprf = hw->priv;
-	if (!kfifo_is_empty(&lprf->tx_buffer))
+
+	if (lprf->tx_skb)
 	{
 		PRINT_DEBUG("ERROR in xmit, buffer not empty yet");
+		return -EBUSY;
 	}
 
-	bytes_copied = kfifo_in(&lprf->tx_buffer, PHY_HEADER, sizeof(PHY_HEADER));
-	if (bytes_copied != sizeof(PHY_HEADER))
-		return -EFBIG;
-
-	bytes_copied = kfifo_in(&lprf->tx_buffer, skb->data, skb->len);
-	if (bytes_copied != skb->len)
-		return -EFBIG;
+	lprf->tx_skb = skb;
 
 	rc = lprf_phy_status_async(&lprf->phy_status, lprf_async_state_change);
 	if (rc)
-		hrtimer_start(&lprf->state_change.timer, STATE_RETRY_INTERVAL,
+		hrtimer_start(&lprf->state_change.timer, RETRY_INTERVAL,
 						HRTIMER_MODE_REL);
 
-	PRINT_KRIT("Wrote %d bytes to TX buffer", bytes_copied);
+	PRINT_KRIT("Wrote %d bytes to TX buffer", skb->len);
 	return 0;
 }
 
@@ -1103,7 +1118,7 @@ ssize_t lprf_read_char_device(struct file *filp, char __user *buf, size_t count,
 	{
 		PRINT_KRIT("Read_char_device goes to sleep because of empty buffer.");
 		ret = wait_event_interruptible(
-				lprf_char_driver_interface.wait_for_fifo_data,
+				lprf_char_driver_interface.wait_for_rx_data,
 			!kfifo_is_empty(&lprf_char_driver_interface.data_buffer));
 		if (ret < 0)
 			return ret;
@@ -1128,48 +1143,40 @@ ssize_t lprf_read_char_device(struct file *filp, char __user *buf, size_t count,
 ssize_t lprf_write_char_device(struct file *filp, const char __user *buf,
 		size_t count, loff_t *f_pos)
 {
-	int free_buffer_size = 0;
-	int bytes_to_copy = 0;
 	int bytes_copied = 0;
 	int ret = 0;
+	struct sk_buff *skb;
 	struct lprf_local *lprf = filp->private_data;
 
-	free_buffer_size = kfifo_avail(&lprf->tx_buffer);
-	bytes_to_copy = free_buffer_size < count ? free_buffer_size : count;
+	PRINT_KRIT("Enter write char device");
 
-	PRINT_DEBUG("Char driver write: TX buffer has %d bytes available",
-			free_buffer_size);
+	if (lprf->tx_skb) {
+		PRINT_KRIT("Read_char_device goes to sleep because of empty buffer.");
+		ret = wait_event_interruptible(
+				lprf_char_driver_interface.wait_for_tx_ready,
+			!lprf->tx_skb);
+	}
 
-	ret = kfifo_from_user(&lprf->tx_buffer, buf, bytes_to_copy,
-			&bytes_copied);
-	if (ret)
-		return ret;
-	PRINT_DEBUG("Copied %d/%d files to TX buffer", bytes_copied, count);
+	skb = dev_alloc_skb(count);
+	if (!skb)
+		return -ENOMEM;
+
+	bytes_copied = count - copy_from_user(skb_put(skb, count), buf, count);
+	PRINT_KRIT("Copied %d/%d files to TX buffer", bytes_copied, count);
+
+	skb->len = bytes_copied;
+	lprf->tx_skb = skb;
+	lprf->skb_from_char_driver = true;
+
+	PRINT_KRIT("Call state change from write char device");
 
 	ret = lprf_phy_status_async(&lprf->phy_status, lprf_async_state_change);
 	if (ret)
-		hrtimer_start(&lprf->state_change.timer, STATE_RETRY_INTERVAL,
+		hrtimer_start(&lprf->state_change.timer, RETRY_INTERVAL,
 						HRTIMER_MODE_REL);
 
+	PRINT_KRIT("Return from write char device");
 	return bytes_copied;
-}
-
-
-static int allocate_spi_buffer(struct lprf_local *lprf)
-{
-	int ret = 0;
-
-	ret = kfifo_alloc(&lprf->rx_buffer, 2024, GFP_KERNEL);
-	if (ret)
-		return ret;
-
-	ret = kfifo_alloc(&lprf->tx_buffer, 2024, GFP_KERNEL);
-	if (ret)
-	{
-		kfifo_free(&lprf->rx_buffer);
-		return ret;
-	}
-	return 0;
 }
 
 
@@ -1501,7 +1508,12 @@ static int lprf_probe(struct spi_device *spi)
 			HRTIMER_MODE_REL);
 	lprf->state_change.timer.function = lprf_delayed_state_change;
 
-	init_waitqueue_head(&lprf_char_driver_interface.wait_for_fifo_data);
+	hrtimer_init(&lprf->state_change.tx_timer, CLOCK_MONOTONIC,
+			HRTIMER_MODE_REL);
+	lprf->state_change.tx_timer.function = lprf_start_test_tx_complete;
+
+	init_waitqueue_head(&lprf_char_driver_interface.wait_for_rx_data);
+	init_waitqueue_head(&lprf_char_driver_interface.wait_for_tx_ready);
 
 	ieee802154_hw->parent = &lprf->spi_device->dev;
 	ieee802154_random_extended_addr(&ieee802154_hw->phy->perm_extended_addr);
@@ -1522,14 +1534,9 @@ static int lprf_probe(struct spi_device *spi)
 		goto free_lprf;
 	PRINT_DEBUG("Hardware successfully initialized");
 
-	ret = allocate_spi_buffer(lprf);
-	if (ret)
-		goto free_lprf;
-	PRINT_DEBUG("Spi Buffer successfully allocated and data receive started");
-
 	ret = register_char_device(lprf);
 	if(ret)
-		goto free_spi_buffer;
+		goto free_lprf;
 
 	ret = ieee802154_register_hw(ieee802154_hw);
 	if (ret)
@@ -1540,9 +1547,6 @@ static int lprf_probe(struct spi_device *spi)
 
 unregister_char_device:
 	unregister_char_device(lprf);
-free_spi_buffer:
-	kfifo_free(&lprf->rx_buffer);
-	kfifo_free(&lprf->tx_buffer);
 free_lprf:
 	ieee802154_free_hw(ieee802154_hw);
 
@@ -1554,8 +1558,6 @@ static int lprf_remove(struct spi_device *spi)
 	struct lprf_local *lprf = spi_get_drvdata(spi);
 
 	// TODO call lprf_stop_ieee802154
-	kfifo_free(&lprf->rx_buffer);
-	kfifo_free(&lprf->tx_buffer);
 	unregister_char_device(lprf);
 
 	ieee802154_unregister_hw(lprf->ieee802154_hw);
