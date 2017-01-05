@@ -105,8 +105,6 @@ struct lprf_state_change {
         uint8_t rx_buf[MAX_SPI_BUFFER_SIZE];
         uint8_t tx_buf[MAX_SPI_BUFFER_SIZE];
 
-	wait_queue_head_t wait_for_state_change_complete;
-
         uint8_t to_state;
         bool transition_in_progress;
 
@@ -124,17 +122,11 @@ struct lprf_local {
 	struct regmap *regmap;
 	struct mutex spi_mutex;
 	struct cdev my_char_dev;
-	struct spi_message spi_message;
-	struct spi_transfer spi_transfer;
-	uint8_t spi_rx_buf[MAX_SPI_BUFFER_SIZE];
-	uint8_t spi_tx_buf[MAX_SPI_BUFFER_SIZE];
 	struct hrtimer rx_polling_timer;
 	DECLARE_KFIFO_PTR(rx_buffer, uint8_t);
 	DECLARE_KFIFO_PTR(tx_buffer, uint8_t);
 	struct ieee802154_hw *ieee802154_hw;
-	struct work_struct poll_rx;
 	atomic_t rx_polling_active;
-	wait_queue_head_t wait_for_frmw_complete;
 
 	struct lprf_phy_status phy_status;
 	struct lprf_state_change state_change;
@@ -489,8 +481,6 @@ static void lprf_tx_change_complete(void *context)
 	state_change->transition_in_progress = false;
 	lprf_start_rx_polling_timer(lprf, TX_RX_INTERVAL);
 
-	wake_up(&state_change->wait_for_state_change_complete);
-
 	PRINT_DEBUG("State change to TX completed successfully");
 }
 
@@ -560,9 +550,6 @@ void lprf_rx_change_complete(void *context)
 	struct lprf_state_change *state_change = &lprf->state_change;
 
 	state_change->transition_in_progress = false;
-
-	//lprf_start_rx_polling(lprf, RX_RX_INTERVAL);
-	wake_up(&state_change->wait_for_state_change_complete);
 
 	lprf_start_rx_polling_timer(lprf, RX_RX_INTERVAL);
 }
@@ -1531,13 +1518,6 @@ static int lprf_probe(struct spi_device *spi)
 	lprf->state_change.lprf = lprf;
 
 	// init spi message
-	spi_message_init(&lprf->spi_message);
-	lprf->spi_message.context = lprf;
-	lprf->spi_message.spi = spi;
-	lprf->spi_transfer.len = 2;
-	lprf->spi_transfer.tx_buf = lprf->spi_tx_buf;
-	lprf->spi_transfer.rx_buf = lprf->spi_rx_buf;
-	spi_message_add_tail(&lprf->spi_transfer, &lprf->spi_message);
 
 	lprf->phy_status.spi_device = spi;
 	spi_message_init(&lprf->phy_status.spi_message);
@@ -1563,8 +1543,6 @@ static int lprf_probe(struct spi_device *spi)
 	lprf->state_change.timer.function = lprf_delayed_state_change;
 
 	init_waitqueue_head(&lprf_char_driver_interface.wait_for_fifo_data);
-	init_waitqueue_head(&lprf->wait_for_frmw_complete);
-	init_waitqueue_head(&lprf->state_change.wait_for_state_change_complete);
 
 	ieee802154_hw->parent = &lprf->spi_device->dev;
 	ieee802154_random_extended_addr(&ieee802154_hw->phy->perm_extended_addr);
