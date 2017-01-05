@@ -112,15 +112,10 @@ struct lprf_state_change {
         uint8_t dem_main_value;
 };
 
-/**
- * @ spi_message: And spi_message struct that can be used for asynchronous
- * 	spi transfers. Make sure to lock spi_mutex and set the correct callback
- * 	when using spi_message.
- */
+
 struct lprf_local {
 	struct spi_device *spi_device;
 	struct regmap *regmap;
-	struct mutex spi_mutex;
 	struct cdev my_char_dev;
 	struct hrtimer rx_polling_timer;
 	DECLARE_KFIFO_PTR(rx_buffer, uint8_t);
@@ -276,10 +271,7 @@ static inline uint8_t lprf_subreg(uint8_t reg_val, uint8_t addr, uint8_t mask,
 	return (reg_val & ~mask) | (data << shift);
 }
 
-/**
- * Every function calling lprf_read_register needs to hold the
- * lprf.spi_mutex.
- */
+
 static inline int lprf_read_register(struct lprf_local *lprf, unsigned int address, unsigned int *value)
 {
 	int ret = 0;
@@ -288,10 +280,7 @@ static inline int lprf_read_register(struct lprf_local *lprf, unsigned int addre
 	return ret;
 }
 
-/**
- * Every function calling lprf_write_register needs to hold the
- * lprf.spi_mutex.
- */
+
 static inline int lprf_write_register(struct lprf_local *lprf, unsigned int address, unsigned int value)
 {
 	int ret = 0;
@@ -300,10 +289,7 @@ static inline int lprf_write_register(struct lprf_local *lprf, unsigned int addr
 	return ret;
 }
 
-/**
- * Every function calling lprf_read_subreg needs to hold the
- * lprf.spi_mutex.
- */
+
 static inline int lprf_read_subreg(struct lprf_local *lprf,
 		unsigned int addr, unsigned int mask,
 		unsigned int shift, unsigned int *data)
@@ -314,10 +300,7 @@ static inline int lprf_read_subreg(struct lprf_local *lprf,
 	return ret;
 }
 
-/**
- * Every function calling lprf_write_subreg needs to hold the
- * lprf.spi_mutex.
- */
+
 static inline int lprf_write_subreg(struct lprf_local *lprf,
 		unsigned int addr, unsigned int mask,
 		unsigned int shift, unsigned int data)
@@ -326,10 +309,6 @@ static inline int lprf_write_subreg(struct lprf_local *lprf,
 }
 
 
-/**
- * Read the phy_status byte. The calling function needs to hold the
- * lprf.spi_mutex
- */
 static inline int lprf_read_phy_status(struct lprf_local *lprf)
 {
 	uint8_t rx_buf[] = {0};
@@ -484,9 +463,7 @@ static void lprf_tx_change_complete(void *context)
 	PRINT_DEBUG("State change to TX completed successfully");
 }
 
-/**
- * Calling function must hold lprf.spi_mutex
- */
+
 static void __lprf_frame_write_complete(void *context)
 {
 	struct lprf_local *lprf = context;
@@ -508,9 +485,7 @@ static void __lprf_frame_write_complete(void *context)
 	PRINT_DEBUG("Change state to TX");
 }
 
-/**
- * Calling function must hold lprf.spi_mutex
- */
+
 static int lprf_start_frame_write(struct lprf_local *lprf)
 {
 	int ret = 0;
@@ -1002,12 +977,6 @@ static int lprf_set_ieee802154_channel(struct ieee802154_hw *hw, u8 page, u8 cha
 	rf_freq = calculate_rf_center_freq(channel);
 	PRINT_DEBUG("RF-freq = %u", rf_freq);
 
-	mutex_lock(&lprf->spi_mutex);
-
-	if (ret)
-		goto unlock_mutex;
-
-
 	// for RX
 	ret = lprf_calculate_pll_values(rf_freq, 1000000, &pll_int, &pll_frac);
 
@@ -1038,8 +1007,6 @@ static int lprf_set_ieee802154_channel(struct ieee802154_hw *hw, u8 page, u8 cha
 	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_PLL_VCO_TUNE, vco_tune) );
 	PRINT_DEBUG("Set VCO TUNE to %d", vco_tune);
 
-unlock_mutex:
-	mutex_unlock(&lprf->spi_mutex);
 	return ret;
 }
 
@@ -1217,15 +1184,11 @@ static int lprf_detect_device(struct lprf_local *lprf)
 {
 	int rx_buf = 0, ret=0, chip_id = 0;
 
-	mutex_lock(&lprf->spi_mutex);
-
 	HANDLE_SPI_ERROR( lprf_read_register(lprf, RG_CHIP_ID_H, &rx_buf) );
 	chip_id |= (rx_buf << 8);
 
 	HANDLE_SPI_ERROR( lprf_read_register(lprf, RG_CHIP_ID_L, &rx_buf) );
 	chip_id |= rx_buf;
-
-	mutex_unlock(&lprf->spi_mutex);
 
 	if (chip_id != 0x1a51)
 	{
@@ -1316,7 +1279,6 @@ static int init_lprf_hardware(struct lprf_local *lprf)
 	unsigned int value = 0;
 	int rx_counter_length = get_rx_length_counter_H(KBIT_RATE, FRAME_LENGTH);
 
-	mutex_lock(&lprf->spi_mutex);
 	HANDLE_SPI_ERROR( lprf_write_register(lprf, RG_GLOBAL_RESETB, 0xFF) );
 	HANDLE_SPI_ERROR( lprf_write_register(lprf, RG_GLOBAL_RESETB, 0x00) );
 	HANDLE_SPI_ERROR( lprf_write_register(lprf, RG_GLOBAL_RESETB, 0xFF) );
@@ -1467,8 +1429,6 @@ static int init_lprf_hardware(struct lprf_local *lprf)
 	lprf_read_register(lprf, RG_DEM_MAIN, &value);
 	lprf->state_change.dem_main_value = value;
 
-	mutex_unlock(&lprf->spi_mutex);
-
 	lprf_set_ieee802154_channel(lprf->ieee802154_hw,
 			lprf->ieee802154_hw->phy->current_page,
 			lprf->ieee802154_hw->phy->current_channel);
@@ -1511,7 +1471,6 @@ static int lprf_probe(struct spi_device *spi)
 			HRTIMER_MODE_REL);
 	lprf->rx_polling_timer.function = lprf_start_poll_rx;
 
-	mutex_init(&lprf->spi_mutex);
 	lprf->spi_device = spi;
 	spi_set_drvdata(spi, lprf);
 

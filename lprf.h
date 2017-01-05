@@ -89,7 +89,6 @@
 
 #define HANDLE_SPI_ERROR(f) ret = (f); \
 	if (ret) { \
-		mutex_unlock(&lprf->spi_mutex); \
 		return ret; \
 	}
 
