@@ -134,6 +134,7 @@ struct lprf_local {
 
 struct lprf_char_driver_interface {
 	atomic_t is_open;
+	atomic_t is_ready;
 	DECLARE_KFIFO_PTR(data_buffer, uint8_t);
 	wait_queue_head_t wait_for_rx_data;
 	wait_queue_head_t wait_for_tx_ready;
@@ -833,7 +834,7 @@ static void preprocess_received_data(uint8_t *data, int length)
 
 static void write_data_to_char_driver(uint8_t *data, int length)
 {
-	if (!atomic_read(&lprf_char_driver_interface.is_open))
+	if (!atomic_read(&lprf_char_driver_interface.is_ready))
 		return;
 
 	kfifo_in(&lprf_char_driver_interface.data_buffer, data, length);
@@ -1087,6 +1088,7 @@ int lprf_open_char_device(struct inode *inode, struct file *filp)
 	if (ret)
 		return ret;
 
+	atomic_set(&lprf_char_driver_interface.is_ready, 1);
 	PRINT_DEBUG("LPRF successfully opened as char device");
 	return 0;
 
@@ -1098,6 +1100,8 @@ int lprf_release_char_device(struct inode *inode, struct file *filp)
 {
 	struct lprf_local *lprf;
 	lprf = container_of(inode->i_cdev, struct lprf_local, my_char_dev);
+
+	atomic_set(&lprf_char_driver_interface.is_ready, 0);
 
 	kfifo_free(&lprf_char_driver_interface.data_buffer);
 	atomic_dec(&lprf_char_driver_interface.is_open);
