@@ -37,11 +37,10 @@
  */
 // #define LPRF_DEBUG_KRIT
 
-#define LPRF_MAX_BUF 256
+#define LPRF_MAX_BUF 255
 #define FRAME_LENGTH 100 // select one byte more to take shifting into account
 #define KBIT_RATE 2000
-#define FIFO_PACKET_SIZE 256
-#define MAX_SPI_BUFFER_SIZE (FIFO_PACKET_SIZE + 2)
+#define MAX_SPI_BUFFER_SIZE (LPRF_MAX_BUF + 2)
 #define MAX_STATE_CHANGE_RETRIES 10
 
 #define RX_POLLING_INTERVAL ktime_set(0, 5000000)

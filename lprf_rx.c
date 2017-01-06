@@ -875,6 +875,7 @@ static void read_lprf_fifo(struct lprf_local *lprf)
 	state_change->spi_message.complete = __lprf_read_frame_complete;
 	state_change->spi_transfer.len = LPRF_MAX_BUF + 2;
 
+	memset(state_change->tx_buf, 0, sizeof(state_change->tx_buf));
 	state_change->tx_buf[0] = FRMR;
 
 
@@ -1144,6 +1145,7 @@ ssize_t lprf_write_char_device(struct file *filp, const char __user *buf,
 		size_t count, loff_t *f_pos)
 {
 	int bytes_copied = 0;
+	int bytes_to_copy = 0;
 	int ret = 0;
 	struct sk_buff *skb;
 	struct lprf_local *lprf = filp->private_data;
@@ -1157,11 +1159,13 @@ ssize_t lprf_write_char_device(struct file *filp, const char __user *buf,
 			!lprf->tx_skb);
 	}
 
-	skb = dev_alloc_skb(count);
+	bytes_to_copy = count < LPRF_MAX_BUF ? count : LPRF_MAX_BUF;
+	skb = dev_alloc_skb(bytes_to_copy);
 	if (!skb)
 		return -ENOMEM;
 
-	bytes_copied = count - copy_from_user(skb_put(skb, count), buf, count);
+	bytes_copied = bytes_to_copy - copy_from_user(
+			skb_put(skb, bytes_to_copy), buf, bytes_to_copy);
 	PRINT_KRIT("Copied %d/%d files to TX buffer", bytes_copied, count);
 
 	skb->len = bytes_copied;
