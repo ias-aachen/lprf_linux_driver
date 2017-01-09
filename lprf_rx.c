@@ -1308,9 +1308,14 @@ static int init_lprf_hardware(struct lprf_local *lprf)
 	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_CTRL_CLK_C3X_PAD, 1) );
 	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_CTRL_CLK_FALLB, 0) );
 
+	// LDOs
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_LDO_A_VOUT,     21) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_LDO_D_VOUT,     24) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_LDO_PLL_VOUT,   24) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_LDO_VCO_VOUT,   24) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_LDO_TX24_VOUT,  23) );
+
 	// -> PLL Configuration
-	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_LDO_PLL_VOUT,   31) );
-	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_LDO_VCO_VOUT,   31) );
 	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_IREF_PLL_CTRLB, 0  ) );
 	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_PLL_VCO_TUNE,   235) );
 	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_PLL_LPF_C,      0  ) );
@@ -1326,8 +1331,7 @@ static int init_lprf_hardware(struct lprf_local *lprf)
 
 	// activate 2.4GHz Band
 	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_RX_RF_MODE, 0) );
-	// TODO set to zero, when receiving with pll actually works
-	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_RX_LO_EXT, 1) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_RX_LO_EXT, 0) );
 
 
 	//RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_LNA24_CTRIM, 255) );
@@ -1348,9 +1352,6 @@ static int init_lprf_hardware(struct lprf_local *lprf)
 	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_CTRL_ADC_MULTIBIT, 0) );
 	//RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_ADC_D_EN, 1) );
 	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_CTRL_ADC_ENABLE, 1) );
-
-	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_LDO_A_VOUT, 0x11) );
-	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_LDO_D_VOUT, 0x12) );
 
 
 
@@ -1389,7 +1390,19 @@ static int init_lprf_hardware(struct lprf_local *lprf)
 	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_DEM_IQ_CROSS, 1) );
 	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_DEM_IQ_INV, 0) );
 
-	//RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_CTRL_C3X_LTUNE, 0) );
+	// General TX Settings
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_PLL_MOD_DATA_RATE, 3) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_PLL_MOD_FREQ_DEV, 21) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_TX_EN, 1) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_TX_ON_CHIP_MOD, 1) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_TX_UPS, 0) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_TX_ON_CHIP_MOD_SP, 2) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_TX_AMPLI_OUT_MAN_H, 1) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_TX_AMPLI_OUT_MAN_L, 0xff));
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_DEM_IQ_INV, 0) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_DEM_IQ_INV, 0) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_DEM_IQ_INV, 0) );
+
 
 	// STATE MASCHINE CONFIGURATION
 
@@ -1402,6 +1415,8 @@ static int init_lprf_hardware(struct lprf_local *lprf)
 	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_TX_ON_FIFO_IDLE, 0) );
 	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_TX_ON_FIFO_SLEEP, 0) );
 	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_TX_IDLE_MODE_EN, 0) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_TX_PWR_CTRL, 15) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_TX_MAXAMP, 0) );
 
 	// SM RX
 	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_DIRECT_TX, 0) );
