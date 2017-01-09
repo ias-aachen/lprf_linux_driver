@@ -265,11 +265,11 @@ static inline int get_rx_length_counter_H(int kbit_rate, int frame_length)
 /**
  * Reverses the bit order of byte
  */
-static inline void reverse_bit_order_and_invert_bits(uint8_t *byte)
+static inline void reverse_bit_order(uint8_t *byte)
 {
 	*byte = ((*byte & 0xaa) >> 1) | ((*byte & 0x55) << 1);
 	*byte = ((*byte & 0xcc) >> 2) | ((*byte & 0x33) << 2);
-	*byte = ~((*byte >> 4) | (*byte << 4));
+	*byte = (*byte >> 4) | (*byte << 4);
 }
 
 static inline uint8_t lprf_subreg(uint8_t reg_val, uint8_t addr, uint8_t mask,
@@ -533,6 +533,7 @@ static void __lprf_frame_write_complete(void *context)
 static int lprf_start_frame_write(struct lprf_local *lprf)
 {
 	int ret = 0;
+	int i;
 	int payload_length = 0;
 	int frame_length = 0;
 	int shr_index, phr_index, payload_index;
@@ -557,6 +558,9 @@ static int lprf_start_frame_write(struct lprf_local *lprf)
 
 	memcpy(state_change->tx_buf + payload_index,
 			lprf->tx_skb->data, lprf->tx_skb->len);
+
+	for(i = 0; i < frame_length; ++i)
+		reverse_bit_order(&state_change->tx_buf[shr_index + i]);
 
 	state_change->spi_message.complete = __lprf_frame_write_complete;
 	state_change->spi_transfer.len = frame_length;
@@ -828,7 +832,8 @@ static void preprocess_received_data(uint8_t *data, int length)
 	int i = 0;
 	for (i = 0; i < length; ++i)
 	{
-		reverse_bit_order_and_invert_bits(&data[i]);
+		reverse_bit_order(&data[i]);
+		data[i] = ~data[i];
 	}
 }
 
@@ -1396,7 +1401,7 @@ static int init_lprf_hardware(struct lprf_local *lprf)
 	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_TX_EN, 1) );
 	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_TX_ON_CHIP_MOD, 1) );
 	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_TX_UPS, 0) );
-	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_TX_ON_CHIP_MOD_SP, 2) );
+	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_TX_ON_CHIP_MOD_SP, 0) );
 	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_TX_AMPLI_OUT_MAN_H, 1) );
 	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_TX_AMPLI_OUT_MAN_L, 0xff));
 	HANDLE_SPI_ERROR( lprf_write_subreg(lprf, SR_DEM_IQ_INV, 0) );
