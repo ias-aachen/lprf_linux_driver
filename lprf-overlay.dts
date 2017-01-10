@@ -17,7 +17,7 @@
 			lowpan0: lprf@0 {
 				compatible = "ias,lprf";
 				reg = <0>;
-				spi-max-frequency = <2000000>;
+				spi-max-frequency = <8000000>;
 				some-custom-value = <42>;
 			};
 		};
