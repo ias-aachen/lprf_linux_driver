@@ -4,6 +4,12 @@ LPRF_DIR=$(dirname "$0")
 
 pushd ${LPRF_DIR} > /dev/null
 
+if ifconfig | grep "wpan0" &> /dev/null
+then
+	echo "Deactivate WPAN interface..."
+	ip link set wpan0 down
+fi
+
 if dtoverlay -l | grep "spi" &> /dev/null
 then
 	echo "Remove spi device tree overlay from kernel..."
@@ -17,7 +23,7 @@ else
 	echo "Compile LPRF device tree file..."
 	dtc -@ -I dts -O dtb -o lprf.dtbo lprf-overlay.dts
 	
-	if dtoverlay -l | grep "spi" &> /dev/null
+	if dtoverlay -l | grep "lprf" &> /dev/null
 	then
 		echo "remove LPRF device tree file from kernel..."
 		dtoverlay -r lprf
@@ -70,5 +76,8 @@ insmod lprf.ko
 echo "Create device file /dev/lprf..."
 major=$(awk "\$2==\"lprf\" {print \$1}" /proc/devices)
 mknod /dev/lprf c $major 0
+
+echo "Activate WPAN interface..."
+ip link set wpan0 up
 
 popd > /dev/null

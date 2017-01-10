@@ -4,6 +4,12 @@ LPRF_DIR=$(dirname "$0")
 
 pushd ${LPRF_DIR} > /dev/null
 
+if ifconfig | grep "wpan0" &> /dev/null
+then
+	echo "Deactivate WPAN interface..."
+	ip link set wpan0 down
+fi
+
 if lsmod | grep "lprf" &> /dev/null
 then
 	echo "Remove lprf kernel module from kernel..."
