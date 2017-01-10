@@ -907,7 +907,7 @@ static void lprf_poll_rx(void *context)
 	if (PHY_SM_STATUS(phy_status) == PHY_SM_RECEIVING &&
 			!PHY_FIFO_EMPTY(phy_status))
 	{
-		lprf_start_rx_polling_timer(lprf, RX_MAX_RECEIVE_TIME);
+		lprf_start_rx_polling_timer(lprf, RETRY_INTERVAL);
 		return;
 	}
 

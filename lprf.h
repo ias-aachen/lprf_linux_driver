@@ -37,17 +37,20 @@
  */
 // #define LPRF_DEBUG_KRIT
 
-#define LPRF_MAX_BUF 255
-#define FRAME_LENGTH 100 // select one byte more to take shifting into account
+/* This is the maximum length of a received IEEE frame including
+ * synchronization information. 127bytes payload + 5 bytes synchronization
+ * header + 1 byte physical header + 2 extra bytes just to be safe and get no
+ * problems during post processing like shifting the received bytes. */
+#define FRAME_LENGTH 135
+#define LPRF_MAX_BUF (FRAME_LENGTH + 2)
 #define KBIT_RATE 2000
 #define MAX_SPI_BUFFER_SIZE (LPRF_MAX_BUF + 2)
 #define MAX_STATE_CHANGE_RETRIES 10
 
 #define RX_POLLING_INTERVAL ktime_set(0, 5000000)
-#define RX_MAX_RECEIVE_TIME ktime_set(0, 500000)
-#define RX_RX_INTERVAL ktime_set(0, 500000)
-#define TX_RX_INTERVAL ktime_set(0, 500000)
-#define RETRY_INTERVAL ktime_set(0, 500000)
+#define RX_RX_INTERVAL ktime_set(0, 600000)
+#define TX_RX_INTERVAL ktime_set(0, 600000)
+#define RETRY_INTERVAL ktime_set(0, 100000)
 
 #define REGR 0x80 // Register read access command
 #define REGW 0xc0 // Register write access command
