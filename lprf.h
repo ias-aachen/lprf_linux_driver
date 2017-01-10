@@ -89,7 +89,7 @@
 #endif
 
 
-#define HANDLE_SPI_ERROR(f) ret = (f); \
+#define RETURN_ON_ERROR(f) ret = (f); \
 	if (ret) { \
 		return ret; \
 	}
