@@ -4,10 +4,10 @@ LPRF_DIR=$(dirname "$0")
 
 pushd ${LPRF_DIR} > /dev/null
 
-if lsmod | grep "lprf_rx" &> /dev/null
+if lsmod | grep "lprf" &> /dev/null
 then
 	echo "Remove lprf kernel module from kernel..."
-	rmmod lprf_rx
+	rmmod lprf
 else
 	echo "LPRF module is not loaded."
 fi

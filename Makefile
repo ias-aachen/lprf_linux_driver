@@ -1,4 +1,4 @@
-obj-m += lprf_rx.o
+obj-m += lprf.o
 
 KERNELDIR ?= /home/pi/kernel/linux
 

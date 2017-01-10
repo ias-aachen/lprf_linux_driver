@@ -1263,7 +1263,7 @@ static int register_char_device(struct lprf_local *lprf)
 	int ret = 0;
 	dev_t dev_number = 0;
 
-	ret = alloc_chrdev_region(&dev_number, 0, 1, "lprf_rx");
+	ret = alloc_chrdev_region(&dev_number, 0, 1, "lprf");
 	if (ret)
 	{
 		PRINT_DEBUG("Dynamic Device number allocation failed");
@@ -1619,7 +1619,7 @@ static struct spi_driver lprf_driver = {
 
 module_spi_driver(lprf_driver);
 
-MODULE_DESCRIPTION("LPRF RX Driver");
+MODULE_DESCRIPTION("LPRF Linux Device Driver for IEEE 802.15.4 network stack");
 MODULE_LICENSE("GPL v2");
 
 

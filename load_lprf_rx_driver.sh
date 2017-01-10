@@ -32,10 +32,10 @@ else
 	dtoverlay lprf.dtbo
 fi
 
-if ls | grep "lprf_rx.ko" &> /dev/null && 
-		[ lprf_rx.c -ot lprf_rx.ko ] &&
-		[ lprf.h -ot lprf_rx.ko ] &&
-		[ lprf_registers.h -ot lprf_rx.ko ]
+if ls | grep "lprf.ko" &> /dev/null && 
+		[ lprf.c -ot lprf.ko ] &&
+		[ lprf.h -ot lprf.ko ] &&
+		[ lprf_registers.h -ot lprf.ko ]
 then
 	echo "Lprf kernel module already up to date."
 else
@@ -61,14 +61,14 @@ fi
 if lsmod | grep "lprf" &> /dev/null
 then
 	echo "Remove LPRF module from kernel..."
-	rmmod lprf_rx
+	rmmod lprf
 fi
 
 echo "Insert LPRF module into kernel..."
-insmod lprf_rx.ko
+insmod lprf.ko
 
 echo "Create device file /dev/lprf..."
-major=$(awk "\$2==\"lprf_rx\" {print \$1}" /proc/devices)
+major=$(awk "\$2==\"lprf\" {print \$1}" /proc/devices)
 mknod /dev/lprf c $major 0
 
 popd > /dev/null
