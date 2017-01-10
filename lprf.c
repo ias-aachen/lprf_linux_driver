@@ -72,7 +72,6 @@ static const uint8_t SYNC_HEADER[] = {0x55, 0x55, 0x55, 0x55, 0xe5};
 static const int PHY_HEADER_LENGTH = 1;
 
 struct lprf_platform_data {
-	int some_custom_value;
 };
 
 
@@ -1473,7 +1472,6 @@ static int init_lprf_hardware(struct lprf_local *lprf)
 
 static int lprf_probe(struct spi_device *spi)
 {
-	u32 custom_value = 0;
 	int ret = 0;
 	struct lprf_platform_data *pdata = 0;
 	struct lprf_local *lprf = 0;
@@ -1489,10 +1487,6 @@ static int lprf_probe(struct spi_device *spi)
 	}
 
 	PRINT_DEBUG( "successfully parsed platform data");
-
-
-	ret = of_property_read_u32(spi->dev.of_node, "some-custom-value", &custom_value);
-	PRINT_DEBUG( "returned value:\t%d, custom value:\t%d", ret, custom_value);
 
 	ieee802154_hw = ieee802154_alloc_hw(sizeof(*lprf), &ieee802154_lprf_callbacks);
 	if( ieee802154_hw == 0)

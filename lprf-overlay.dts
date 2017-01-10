@@ -18,7 +18,6 @@
 				compatible = "ias,lprf";
 				reg = <0>;
 				spi-max-frequency = <2000000>;
-				some-custom-value = <42>;
 			};
 		};
 	};
