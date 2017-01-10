@@ -62,9 +62,6 @@ static void read_lprf_fifo(struct lprf_local *lprf);
 static int lprf_start_ieee802154(struct ieee802154_hw *hw);
 static void lprf_stop_ieee802154(struct ieee802154_hw *hw);
 static int lprf_set_ieee802154_channel(struct ieee802154_hw *hw, u8 page, u8 channel);
-static int lprf_set_ieee802154_addr_filter(struct ieee802154_hw *hw,
-		    struct ieee802154_hw_addr_filt *filt,
-		    unsigned long changed);
 static int lprf_xmit_ieee802154_async(struct ieee802154_hw *hw, struct sk_buff *skb);
 static int lprf_ieee802154_energy_detection(struct ieee802154_hw *hw, u8 *level);
 
@@ -239,7 +236,7 @@ static const struct ieee802154_ops  ieee802154_lprf_callbacks = {
 	.xmit_async = lprf_xmit_ieee802154_async, // needs to be implemented for Tx
 	.ed = lprf_ieee802154_energy_detection, // can we support this? Can not be disabled in hw_flags
 	.set_channel = lprf_set_ieee802154_channel,
-	.set_hw_addr_filt = lprf_set_ieee802154_addr_filter,
+	.set_hw_addr_filt = 0,
 	.set_txpower = 0,	// needs to be implemented for tx (seems to work without)
 	.set_lbt = 0,		// Disabled in hw_flags
 	.set_cca_mode = 0,	// can we support this? Can not be disabled in hw_flags (seems to work without)
@@ -1034,15 +1031,6 @@ static int lprf_set_ieee802154_channel(struct ieee802154_hw *hw, u8 page, u8 cha
 	PRINT_DEBUG("Set VCO TUNE to %d", vco_tune);
 
 	return ret;
-}
-
-static int lprf_set_ieee802154_addr_filter(struct ieee802154_hw *hw,
-		    struct ieee802154_hw_addr_filt *filt,
-		    unsigned long changed)
-{
-
-	PRINT_DEBUG("Called unimplemented function lprf_set_ieee802154_addr_filter()");
-	return 0;
 }
 
 static int lprf_xmit_ieee802154_async(struct ieee802154_hw *hw, struct sk_buff *skb)
