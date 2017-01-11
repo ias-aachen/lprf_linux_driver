@@ -86,7 +86,7 @@ struct lprf_phy_status {
         struct spi_transfer spi_transfer;
         uint8_t rx_buf[1];
         uint8_t tx_buf[1];
-        bool is_active;
+        atomic_t is_active;
         void (*complete)(void *context);
 };
 
@@ -329,7 +329,7 @@ static void lprf_phy_status_complete(void *context)
 {
 	struct lprf_local *lprf = context;
 	lprf->phy_status.complete(context);
-	lprf->phy_status.is_active = false;
+	atomic_dec(&lprf->phy_status.is_active);
 }
 
 static int lprf_phy_status_async(struct lprf_phy_status *phy_status,
@@ -337,11 +337,11 @@ static int lprf_phy_status_async(struct lprf_phy_status *phy_status,
 {
 	int ret = 0;
 
-	if (phy_status->is_active) {
-		PRINT_KRIT("Warning: PHY_STATUS read is already in progress. Abort...");
+	if (atomic_inc_return(&phy_status->is_active) != 1)
+	{
+		atomic_dec(&phy_status->is_active);
 		return -EBUSY;
 	}
-	phy_status->is_active = true;
 
 	phy_status->complete = complete;
 	phy_status->spi_message.complete = lprf_phy_status_complete;
