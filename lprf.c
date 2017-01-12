@@ -1343,6 +1343,13 @@ static int init_lprf_hardware(struct lprf_local *lprf)
 
 	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_FIFO_MODE_EN, 1) );
 
+	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_SM_TIME_POWER_TX, 0xff));
+	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_SM_TIME_POWER_RX, 0xff));
+	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_SM_TIME_PLL_PON,  0xff));
+	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_SM_TIME_PLL_SET,  0xff));
+	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_SM_TIME_TX,       0xff));
+	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_SM_TIME_PD_EN,    0xff));
+
 	// SM TX
 	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_TX_MODE, 0) );
 	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_INVERT_FIFO_CLK, 0) );
