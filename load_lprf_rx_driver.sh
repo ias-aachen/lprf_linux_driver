@@ -78,6 +78,8 @@ major=$(awk "\$2==\"lprf\" {print \$1}" /proc/devices)
 mknod /dev/lprf c $major 0
 
 echo "Activate WPAN interface..."
+sudo iwpan dev wpan0 set pan_id 0xdead
+sudo iwpan dev wpan0 set short_addr 0xbeef
 ip link set wpan0 up
 
 popd > /dev/null
