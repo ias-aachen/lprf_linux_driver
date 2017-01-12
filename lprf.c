@@ -50,14 +50,16 @@
 #include "lprf_registers.h"
 
 struct lprf_local;
+struct lprf_state_change;
 
 static int init_lprf_hardware(struct lprf_local *lprf);
-static void lprf_poll_rx(void *context);
-static inline void lprf_start_rx_polling_timer(struct lprf_local *lprf,
+static inline void lprf_start_polling_timer(struct lprf_local *lprf,
 		ktime_t first_interval);
 static inline void lprf_stop_rx_polling(struct lprf_local *lprf);
 static int lprf_start_frame_write(struct lprf_local *lprf);
 static void read_lprf_fifo(struct lprf_local *lprf);
+static void lprf_evaluate_phy_status(struct lprf_local *lprf,
+		struct lprf_state_change *state_change, uint8_t phy_status);
 
 static int lprf_start_ieee802154(struct ieee802154_hw *hw);
 static void lprf_stop_ieee802154(struct ieee802154_hw *hw);
@@ -97,19 +99,17 @@ struct lprf_phy_status {
 struct lprf_state_change {
 	struct lprf_local *lprf;
 
-	struct hrtimer timer;
         struct spi_message spi_message;
         struct spi_transfer spi_transfer;
         uint8_t rx_buf[MAX_SPI_BUFFER_SIZE];
         uint8_t tx_buf[MAX_SPI_BUFFER_SIZE];
 
         uint8_t to_state;
-        bool transition_in_progress;
+        atomic_t transition_in_progress;
+        bool tx_complete;
 
         uint8_t sm_main_value;
         uint8_t dem_main_value;
-
-        struct hrtimer tx_timer;
 };
 
 
@@ -328,12 +328,14 @@ static inline int lprf_read_phy_status(struct lprf_local *lprf)
 static void lprf_phy_status_complete(void *context)
 {
 	struct lprf_local *lprf = context;
-	lprf->phy_status.complete(context);
+	struct lprf_state_change *state_change = &lprf->state_change;
+	struct lprf_phy_status *phy_status = &lprf->phy_status;
+	uint8_t status = phy_status->rx_buf[0];
 	atomic_dec(&lprf->phy_status.is_active);
+	lprf_evaluate_phy_status(lprf, state_change, status);
 }
 
-static int lprf_phy_status_async(struct lprf_phy_status *phy_status,
-		void (*complete)(void *context))
+static int lprf_phy_status_async(struct lprf_phy_status *phy_status)
 {
 	int ret = 0;
 
@@ -343,7 +345,6 @@ static int lprf_phy_status_async(struct lprf_phy_status *phy_status,
 		return -EBUSY;
 	}
 
-	phy_status->complete = complete;
 	phy_status->spi_message.complete = lprf_phy_status_complete;
 	ret = spi_async(phy_status->spi_device, &phy_status->spi_message);
 	if (ret)
@@ -456,49 +457,18 @@ static int lprf_calculate_pll_values(uint32_t rf_frequency,
 }
 
 
-static void lprf_tx_complete(struct lprf_local *lprf, uint8_t phy_status)
+static void lprf_tx_complete(struct lprf_local *lprf)
 {
-	if (lprf->skb_from_char_driver)
-		kfree_skb(lprf->tx_skb);
-	else
-		ieee802154_xmit_complete(lprf->ieee802154_hw, lprf->tx_skb, false);
-	lprf->skb_from_char_driver = false;
+	struct sk_buff *skb_temp = lprf->tx_skb;
 	lprf->tx_skb = 0;
-	lprf->state_change.transition_in_progress = false;
+	if (lprf->skb_from_char_driver)
+		kfree_skb(skb_temp);
+	else
+		ieee802154_xmit_complete(lprf->ieee802154_hw, skb_temp, false);
+	lprf->skb_from_char_driver = false;
+	lprf->state_change.tx_complete = false;
 	wake_up(&lprf_char_driver_interface.wait_for_tx_ready);
-	lprf_poll_rx(lprf);
 	PRINT_KRIT("TX data send successfully");
-}
-
-
-static void lprf_test_tx_complete(void *context)
-{
-	struct lprf_local *lprf = context;
-	struct lprf_state_change *state_change = &lprf->state_change;
-	uint8_t phy_status = lprf->phy_status.rx_buf[0];
-
-	if (PHY_SM_STATUS(phy_status) == PHY_SM_SENDING) {
-		hrtimer_start(&state_change->tx_timer, RETRY_INTERVAL,
-					HRTIMER_MODE_REL);
-		return;
-	}
-	lprf_tx_complete(lprf, phy_status);
-}
-
-static enum hrtimer_restart lprf_start_test_tx_complete(struct hrtimer *timer)
-{
-	int rc = 0;
-	struct lprf_state_change *state_change = container_of(
-			timer, struct lprf_state_change, tx_timer);
-	struct lprf_local *lprf = state_change->lprf;
-
-	rc = lprf_phy_status_async(&lprf->phy_status, lprf_test_tx_complete);
-	if (rc)
-		hrtimer_start(&state_change->tx_timer, RETRY_INTERVAL,
-							HRTIMER_MODE_REL);
-
-	PRINT_KRIT("lprf_start_test_tx_complete");
-	return HRTIMER_NORESTART;
 }
 
 static void lprf_tx_change_complete(void *context)
@@ -506,8 +476,10 @@ static void lprf_tx_change_complete(void *context)
 	struct lprf_local *lprf = context;
 	struct lprf_state_change *state_change = &lprf->state_change;
 
-	hrtimer_start(&state_change->tx_timer, TX_RX_INTERVAL,
-			HRTIMER_MODE_REL);
+	state_change->tx_complete = true;
+	atomic_dec(&lprf->state_change.transition_in_progress);
+
+	lprf_start_polling_timer(lprf, TX_RX_INTERVAL);
 }
 
 
@@ -573,9 +545,9 @@ void lprf_rx_change_complete(void *context)
 	struct lprf_local *lprf = context;
 	struct lprf_state_change *state_change = &lprf->state_change;
 
-	state_change->transition_in_progress = false;
+	atomic_dec(&state_change->transition_in_progress);
 
-	lprf_start_rx_polling_timer(lprf, RX_RX_INTERVAL);
+	lprf_start_polling_timer(lprf, RX_RX_INTERVAL);
 }
 
 /*
@@ -640,64 +612,71 @@ static void lprf_rx_resets(void *context)
 	}
 }
 
-static void lprf_async_state_change(void *context)
+static void lprf_async_state_change(struct lprf_local *lprf, uint8_t state)
 {
-	struct lprf_local *lprf = context;
 	struct lprf_state_change *state_change = &lprf->state_change;
-	uint8_t phy_status = lprf->phy_status.rx_buf[0];
+	state_change->to_state = state;
 
-	PRINT_KRIT("In phy_status in state_change 0x%X", phy_status);
-
-	if (!PHY_FIFO_EMPTY(phy_status) ||
-			PHY_SM_STATUS(phy_status) == PHY_SM_BUSY ||
-			PHY_SM_STATUS(phy_status) == PHY_SM_SENDING ||
-			state_change->transition_in_progress)
+	switch (state)
 	{
-		PRINT_KRIT("Warning: LPRF Chip Busy, abort state change...");
-		return;
-	}
-
-	// If TX data available change to TX
-	if (lprf->tx_skb)
-	{
-		//lprf_stop_rx_polling(lprf);
-		state_change->transition_in_progress = true;
-		state_change->to_state = STATE_CMD_TX;
+	case STATE_CMD_RX:
+		PRINT_KRIT("Will change state to RX...");
+		lprf_rx_resets(lprf);
+		break;
+	case STATE_CMD_TX:
 		lprf_async_write_register(state_change, RG_SM_MAIN,
 				lprf_subreg(state_change->sm_main_value,
 				SR_SM_COMMAND, STATE_CMD_SLEEP),
 				lprf_rx_resets);
-
 		PRINT_KRIT("Changed state to sleep, will change to TX");
-		return;
-	}
-
-	// change to RX if not already RX
-	if (!(PHY_SM_STATUS(phy_status) == PHY_SM_RECEIVING))
-	{
-		state_change->to_state = STATE_CMD_RX;
-		state_change->transition_in_progress = true;
-		lprf_rx_resets(lprf);
-		PRINT_KRIT("Change state to RX");
-		return;
+		break;
+	default:
+		PRINT_DEBUG("Unsupported state change to state 0x%X", state);
 	}
 }
 
-
-static enum hrtimer_restart lprf_delayed_state_change(struct hrtimer *timer)
+static void lprf_evaluate_phy_status(struct lprf_local *lprf,
+		struct lprf_state_change *state_change, uint8_t phy_status)
 {
-	int rc = 0;
-	struct lprf_state_change *state_change = container_of(
-			timer, struct lprf_state_change, timer);
-	struct lprf_local *lprf = state_change->lprf;
+	PRINT_KRIT("In phy_status in lprf_evaluate_phy_status 0x%X", phy_status);
 
-	rc = lprf_phy_status_async(&lprf->phy_status,
-			lprf_async_state_change);
-	if (rc)
-		hrtimer_start(&state_change->timer, RETRY_INTERVAL,
-				HRTIMER_MODE_REL);
+	if (atomic_inc_return(&state_change->transition_in_progress) != 1) {
+		atomic_dec(&state_change->transition_in_progress);
+		PRINT_KRIT("transition in progress... abort");
+		return;
+	}
 
-	return HRTIMER_NORESTART;
+	if(PHY_SM_STATUS(phy_status) != PHY_SM_SENDING &&
+			state_change->tx_complete)
+		lprf_tx_complete(lprf);
+
+	if(PHY_SM_STATUS(phy_status) == PHY_SM_SLEEP &&
+			!PHY_FIFO_EMPTY(phy_status)) {
+		read_lprf_fifo(lprf);
+		return;
+	}
+	if (lprf->tx_skb && PHY_FIFO_EMPTY(phy_status)) {
+		lprf_async_state_change(lprf, STATE_CMD_TX);
+		return;
+	}
+
+	if(PHY_SM_STATUS(phy_status) == PHY_SM_SLEEP &&
+			PHY_FIFO_EMPTY(phy_status)) {
+		lprf_async_state_change(lprf, STATE_CMD_RX);
+		return;
+	}
+
+	atomic_dec(&state_change->transition_in_progress);
+
+	if(PHY_SM_STATUS(phy_status) == PHY_SM_RECEIVING) {
+		if (PHY_FIFO_EMPTY(phy_status))
+			lprf_start_polling_timer(lprf, RX_POLLING_INTERVAL);
+		else
+			lprf_start_polling_timer(lprf, RETRY_INTERVAL);
+		return;
+	}
+
+	lprf_start_polling_timer(lprf, RETRY_INTERVAL);
 }
 
 
@@ -862,10 +841,10 @@ static void __lprf_read_frame_complete(void *context)
 	wake_up(&lprf_char_driver_interface.wait_for_rx_data);
 
 	lprf_receive_ieee802154_data(lprf, data_buf, length);
-	rc = lprf_phy_status_async(&lprf->phy_status, lprf_async_state_change);
+	atomic_dec(&state_change->transition_in_progress);
+	rc = lprf_phy_status_async(&lprf->phy_status);
 	if (rc)
-		hrtimer_start(&state_change->timer, RETRY_INTERVAL,
-				HRTIMER_MODE_REL);
+		PRINT_KRIT("PHY_STATUS BUSY in __lprf_read_frame_complete");
 
 }
 
@@ -890,54 +869,20 @@ static void read_lprf_fifo(struct lprf_local *lprf)
 }
 
 
-static void lprf_poll_rx(void *context)
-{
-	struct lprf_local *lprf = context;
-	uint8_t phy_status = lprf->phy_status.rx_buf[0];
-
-	PRINT_KRIT("Poll RX... phy_status = 0x%.2X", phy_status);
-
-	if (lprf->state_change.transition_in_progress)
-		return;
-
-	if (PHY_SM_STATUS(phy_status) == PHY_SM_RECEIVING &&
-			!PHY_FIFO_EMPTY(phy_status))
-	{
-		lprf_start_rx_polling_timer(lprf, RETRY_INTERVAL);
-		return;
-	}
-
-	if(PHY_SM_STATUS(phy_status) == PHY_SM_SLEEP) {
-
-		if(!PHY_FIFO_EMPTY(phy_status)) {
-			PRINT_KRIT("Data Received, Timer will not be restarted.");
-			//lprf_stop_rx_polling(lprf);
-			read_lprf_fifo(lprf);
-			return;
-		}
-		else {
-			PRINT_DEBUG("Warning: poll rx but sleep mode: abort...");
-			return; // TODO warning or state change
-		}
-	}
-	lprf_start_rx_polling_timer(lprf, RX_POLLING_INTERVAL);
-}
-
-static enum hrtimer_restart lprf_start_poll_rx(struct hrtimer *timer)
+static enum hrtimer_restart lprf_start_poll(struct hrtimer *timer)
 {
 	int rc = 0;
 	struct lprf_local *lprf = container_of(
 			timer, struct lprf_local, rx_polling_timer);
 
-	rc = lprf_phy_status_async(&lprf->phy_status, lprf_poll_rx);
+	rc = lprf_phy_status_async(&lprf->phy_status);
 	if (rc)
-		lprf_start_rx_polling_timer(lprf, RX_POLLING_INTERVAL);
-	//hrtimer_forward_now(timer, RX_POLLING_INTERVAL);
+		PRINT_KRIT("PHY_STATUS BUSY...");
 	return HRTIMER_NORESTART;
 }
 
 
-static inline void lprf_start_rx_polling_timer(struct lprf_local *lprf,
+static inline void lprf_start_polling_timer(struct lprf_local *lprf,
 		ktime_t first_interval)
 {
 	if (atomic_read(&lprf->rx_polling_active))
@@ -959,7 +904,7 @@ static int lprf_start_ieee802154(struct ieee802154_hw *hw)
 	PRINT_DEBUG("Call lprf_start_ieee802154...");
 
 	atomic_set(&lprf->rx_polling_active, 1);
-	lprf_phy_status_async(&lprf->phy_status, lprf_async_state_change);
+	lprf_phy_status_async(&lprf->phy_status);
 
 	return 0;
 }
@@ -1046,10 +991,9 @@ static int lprf_xmit_ieee802154_async(struct ieee802154_hw *hw, struct sk_buff *
 
 	lprf->tx_skb = skb;
 
-	rc = lprf_phy_status_async(&lprf->phy_status, lprf_async_state_change);
+	rc = lprf_phy_status_async(&lprf->phy_status);
 	if (rc)
-		hrtimer_start(&lprf->state_change.timer, RETRY_INTERVAL,
-						HRTIMER_MODE_REL);
+		PRINT_KRIT("PHY STATUS busy in lprf_xmit_ieee802154_async");
 
 	PRINT_KRIT("Wrote %d bytes to TX buffer", skb->len);
 	return 0;
@@ -1170,10 +1114,9 @@ ssize_t lprf_write_char_device(struct file *filp, const char __user *buf,
 
 	PRINT_KRIT("Call state change from write char device");
 
-	ret = lprf_phy_status_async(&lprf->phy_status, lprf_async_state_change);
+	ret = lprf_phy_status_async(&lprf->phy_status);
 	if (ret)
-		hrtimer_start(&lprf->state_change.timer, RETRY_INTERVAL,
-						HRTIMER_MODE_REL);
+		PRINT_KRIT("phy status busy in lprf_write_char_device");
 
 	PRINT_KRIT("Return from write char device");
 	return bytes_copied;
@@ -1486,7 +1429,7 @@ static int lprf_probe(struct spi_device *spi)
 
 	hrtimer_init(&lprf->rx_polling_timer, CLOCK_MONOTONIC,
 			HRTIMER_MODE_REL);
-	lprf->rx_polling_timer.function = lprf_start_poll_rx;
+	lprf->rx_polling_timer.function = lprf_start_poll;
 
 	lprf->spi_device = spi;
 	spi_set_drvdata(spi, lprf);
@@ -1513,14 +1456,6 @@ static int lprf_probe(struct spi_device *spi)
 	lprf->state_change.spi_transfer.rx_buf = lprf->state_change.rx_buf;
 	spi_message_add_tail(&lprf->state_change.spi_transfer,
 			&lprf->state_change.spi_message);
-
-	hrtimer_init(&lprf->state_change.timer, CLOCK_MONOTONIC,
-			HRTIMER_MODE_REL);
-	lprf->state_change.timer.function = lprf_delayed_state_change;
-
-	hrtimer_init(&lprf->state_change.tx_timer, CLOCK_MONOTONIC,
-			HRTIMER_MODE_REL);
-	lprf->state_change.tx_timer.function = lprf_start_test_tx_complete;
 
 	init_waitqueue_head(&lprf_char_driver_interface.wait_for_rx_data);
 	init_waitqueue_head(&lprf_char_driver_interface.wait_for_tx_ready);
