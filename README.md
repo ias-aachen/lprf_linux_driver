@@ -1,7 +1,7 @@
 # The LPRF Chip
 The LPRF Chip is a low power transceiver chip designed at the institute for Integrated Analog Circuits and RF Systems (IAS) at RWTH Aachen university. To make this chip compatible with the IEEE 802.15.4 standard the MAC layer code in the linux network stack is used. This repository implements a linux device driver as an interface between the LPRF chip and the IEEE 802.15.4 network stack of the linux kernel.
 
-# System Setup and installation guide
+# System Setup and Installation Guide
 This driver was tested on a Raspberry Pi model B+ with a self compiled kernel version 4.4.30+.
 
 ## Prepare the SD Card for Raspberry Pi
@@ -26,10 +26,12 @@ Copying the image file to the SD card may take a while. To see the progress you 
 ## Configure Raspberry Pi
 Insert the SD-card and start the Raspberry Pi. Log in as the default user "pi" with password "raspberry". 
 ### Configuration Tool
-Run `sudo raspi config` in a terminal to start the configuration tool. Then change the following settings:
+Run `sudo raspi-config` in a terminal to start the configuration tool. Then change the following settings:
 - Expand File System
-- Boot Ooptions -> B1 Desktop / CLI -> B1 Console
-- Localisation Options (optional)
+- Boot Options -> B1 Desktop / CLI -> B1 Console
+- Boot Options -> B3 Splash Screen -> Deactivate Splash Screen
+- Optionally adjust keyboard layout, time zone in Localisation Options or Internationalization
+- Interfacing Options or Advanced Options -> SSH -> Yes
 
 Then reboot the Raspberrry Pi 
 ```
@@ -74,7 +76,7 @@ sudo apt-get upgrade
 ```
 mkdir kernel
 cd kernel
-git clone –depth=1 https://github.com/raspberrypi/linux.git
+git clone --depth=1 https://github.com/raspberrypi/linux.git
 cd linux
 ```
 
@@ -98,7 +100,6 @@ make menuconfig
 ```
 In the configuration tool adjust the following settings:
 
-- Device Drivers -> Network device support -> Wireless LAN -> Realtek 8192C USB WiFi <*>
 - Device Drivers -> Network device support -> USB Network Adapters -> Multi-
   purpose USB Networking Framework -> SMSC LAN95XX based USB 2.0 10/100
   ethernet devices <*>
@@ -124,6 +125,7 @@ In the configuration tool adjust the following settings:
 - Networking support -> Networking Options -> NETLINK: mmaped IO <*>
 - Networking support -> Networking Options -> NETLINK: socket monitoring interface
   <*>
+- Device Drivers -> Network device support -> Wireless LAN -> Realtek 8192C USB WiFi <*>
 - Device Drivers -> Network Device Support -> IEEE 802.15.4 drivers ->
   AT86RF230/231/233/212 transceiver driver \<M>
 
@@ -155,11 +157,24 @@ Pin 23 -- SCK
 Pin 24 -- SELN
 ```
 
+## Build and install the WPAN tools
+```
+cd
+sudo apt-get install libnl-3-dev libnl-genl-3-dev
+sudo apt-get install dh-autoreconf
+git clone https://github.com/linux-wpan/wpan-tools
+cd wpan-tools
+./autogen.sh
+./configure CFLAGS='-g -O0' --prefix=/usr --sysconfdir=/etc --libdir=/usr/lib
+make
+sudo make install
+```
+
 ## Download the source code
 ```
-mkdir lprf_driver
-cd lprf_driver
+cd
 git clone https://github.com/namlit/lprf_linux_driver.git
+cd lprf_linux_driver
 ```
 
 ## Compile and load driver
@@ -228,3 +243,27 @@ sudo iwpan dev wpan0 set pan_id 0xdead
 sudo iwpan dev wpan0 set short_addr 0xbeef
 sudo ip link set wpan0 up
 ```
+
+# Setup Eclipse
+
+When working with the source code it is worth it to setup an integrated development environment like eclipse. This enables a lot of features like jumping to function declarations and implementations somethere in the linux kernel code. This Guide assumes that the file system of the Raspberry Pi is mounted to a Linux host computer via SSH as described above. Eclipse will run on the host PC and access the files on the Raspberry Pi. Note that the actual compiling still needs to be done on the Raspberry Pi.
+
+
+## Install Eclipse
+```
+sudo apt-get install eclipse eclipse-cdt g++
+```
+## Add new Project
+- Select a new workspace on startup. (e.g. ~/eclipse_workspaces/lprf_linux_driver)
+- Window -> Open Perspective -> C/C++
+- File -> New -> Makefile Project with existing code
+  - Project Name: LPRF_Linux_Driver
+  - Existing Code Location: ~/pi/lprf_linux_driver
+  - Toolchains for indexer settings: none
+- Window -> Show View -> Project Explorer (if not already there)
+- Rigth click on Project in Project Explorer -> Properties
+  - C/C++ General -> Paths and Symbols -> Source Location -> Link Folder...
+    - Link to folder in the file system
+    - Browse... -> Folder to Linux Kernel source (e.g. ~/pi/kernel/linux)
+
+After applying the changes Eclipse will start the indexer to build the indices. The progress should be displayed in the status bar on the bottom rigth. For the hole linux kernel source code this migth take a while.
