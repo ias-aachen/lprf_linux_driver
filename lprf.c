@@ -778,8 +778,8 @@ static int lprf_receive_ieee802154_data(struct lprf_local *lprf,
 	frame_length = buffer[0];
 
 	if (!ieee802154_is_valid_psdu_len(frame_length)) {
-		PRINT_KRIT("Frame with invalid length %d received", frame_length);
-		return -EINVAL;
+		dev_vdbg(&lprf->spi_device->dev, "corrupted frame received\n");
+		frame_length = IEEE802154_MTU;
 	}
 
 	if (frame_length > buffer_length) {
@@ -790,6 +790,7 @@ static int lprf_receive_ieee802154_data(struct lprf_local *lprf,
 
 	skb = dev_alloc_skb(frame_length);
 	if (!skb) {
+		dev_vdbg(&lprf->spi_device->dev, "failed to allocate sk_buff\n");
 		return -ENOMEM;
 	}
 
@@ -1139,7 +1140,8 @@ static int lprf_detect_device(struct lprf_local *lprf)
 
 	if (chip_id != 0x1a51)
 	{
-		PRINT_DEBUG("Chip with invalid Chip ID %X found", chip_id);
+		dev_err(&lprf->spi_device->dev, "Device with invalid "
+				"Chip ID %X found", chip_id);
 		return -ENODEV;
 	}
 
@@ -1163,7 +1165,7 @@ static int lprf_detect_device(struct lprf_local *lprf)
 	lprf->ieee802154_hw->phy->cca_ed_level = 42;
 	lprf->ieee802154_hw->phy->transmit_power = 42;
 
-	PRINT_DEBUG("LPRF Chip found with Chip ID %X", chip_id);
+	dev_info(&lprf->spi_device->dev,"LPRF Chip found with Chip ID %X", chip_id);
 	return 0;
 
 }
@@ -1455,7 +1457,8 @@ static int lprf_probe(struct spi_device *spi)
 
 	lprf->regmap = devm_regmap_init_spi(spi, &lprf_regmap_spi_config);
 	if (IS_ERR(lprf->regmap)) {
-		PRINT_DEBUG( "Failed to allocate register map: %d", (int) PTR_ERR(lprf->regmap) );
+		dev_err(&spi->dev, "Failed to allocate register map: %d",
+				(int) PTR_ERR(lprf->regmap));
 	}
 
 	ret = lprf_detect_device(lprf);
@@ -1495,7 +1498,7 @@ static int lprf_remove(struct spi_device *spi)
 
 	ieee802154_unregister_hw(lprf->ieee802154_hw);
 	ieee802154_free_hw(lprf->ieee802154_hw);
-	PRINT_DEBUG("Successfully removed LPRF SPI Device");
+	dev_dbg(&spi->dev, "unregistered LPRF chip\n");
 
 	return 0;
 }

@@ -28,7 +28,7 @@
 #define _LPRF_H_
 
 // Remove comment to show debug outputs
-#define LPRF_DEBUG
+// #define LPRF_DEBUG
 
 /*
  * Debug macro for timing critical parts like polling. Activating
@@ -76,14 +76,14 @@
 
 #undef PRINT_DEBUG
 #ifdef LPRF_DEBUG
-	#define PRINT_DEBUG(fmt, args...) printk( KERN_CRIT "lprf: " fmt "\n", ## args)
+	#define PRINT_DEBUG(fmt, args...) printk( KERN_DEBUG "lprf: " fmt "\n", ## args)
 #else
 	#define PRINT_DEBUG(fmt, args...)
 #endif
 
 #undef PRINT_KRIT
 #ifdef LPRF_DEBUG_KRIT
-	#define PRINT_KRIT(fmt, args...) printk( KERN_CRIT "lprf: " fmt "\n", ## args)
+	#define PRINT_KRIT(fmt, args...) printk( KERN_DEBUG "lprf: " fmt "\n", ## args)
 #else
 	#define PRINT_KRIT(fmt, args...)
 #endif
