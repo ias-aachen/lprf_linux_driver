@@ -70,9 +70,6 @@ static int lprf_ieee802154_energy_detection(struct ieee802154_hw *hw, u8 *level)
 static const uint8_t SYNC_HEADER[] = {0x55, 0x55, 0x55, 0x55, 0xe5};
 static const int PHY_HEADER_LENGTH = 1;
 
-struct lprf_platform_data {
-};
-
 
 /*
  * lprf_phy_status is used for the async spi tranfer to get status
@@ -1383,64 +1380,75 @@ static int init_lprf_hardware(struct lprf_local *lprf)
 	return 0;
 }
 
-static int lprf_probe(struct spi_device *spi)
+static void init_lprf_local(struct lprf_local *lprf, struct spi_device *spi)
 {
-	int ret = 0;
-	struct lprf_platform_data *pdata = 0;
-	struct lprf_local *lprf = 0;
-	struct ieee802154_hw *ieee802154_hw = 0;
-	PRINT_DEBUG( "call lprf_probe");
-
-	pdata = spi->dev.platform_data;
-
-	// Get platform data
-	if (!IS_ENABLED(CONFIG_OF) || !spi->dev.of_node) {
-		if (!pdata)
-			return -ENOENT;
-	}
-
-	PRINT_DEBUG( "successfully parsed platform data");
-
-	ieee802154_hw = ieee802154_alloc_hw(sizeof(*lprf), &ieee802154_lprf_callbacks);
-	if( ieee802154_hw == 0)
-		return -ENOMEM;
-	PRINT_DEBUG("Successfully allocated ieee802154_hw structure");
-
-	lprf = ieee802154_hw->priv;
-	lprf->ieee802154_hw = ieee802154_hw;
-
 	hrtimer_init(&lprf->rx_polling_timer, CLOCK_MONOTONIC,
 			HRTIMER_MODE_REL);
 	lprf->rx_polling_timer.function = lprf_start_poll;
 
 	lprf->spi_device = spi;
 	spi_set_drvdata(spi, lprf);
+}
 
-	lprf->state_change.lprf = lprf;
+static void init_state_change(struct lprf_state_change *state_change,
+		struct lprf_local *lprf, struct spi_device *spi)
+{
+	state_change->lprf = lprf;
+	spi_message_init(&state_change->spi_message);
+	state_change->spi_message.context = lprf;
+	state_change->spi_message.spi = spi;
+	state_change->spi_transfer.len = 3;
+	state_change->spi_transfer.tx_buf = state_change->tx_buf;
+	state_change->spi_transfer.rx_buf = state_change->rx_buf;
+	spi_message_add_tail(&state_change->spi_transfer,
+			&state_change->spi_message);
+}
 
-	// init spi message
+static void init_phy_status(struct lprf_phy_status *phy_status,
+		struct lprf_local *lprf, struct spi_device *spi)
+{
+	phy_status->spi_device = spi;
+	spi_message_init(&phy_status->spi_message);
+	phy_status->spi_message.context = lprf;
+	phy_status->spi_message.spi = spi;
+	phy_status->spi_transfer.len = 1;
+	phy_status->spi_transfer.tx_buf = phy_status->tx_buf;
+	phy_status->spi_transfer.rx_buf = phy_status->rx_buf;
+	spi_message_add_tail(&phy_status->spi_transfer,
+			&phy_status->spi_message);
+}
 
-	lprf->phy_status.spi_device = spi;
-	spi_message_init(&lprf->phy_status.spi_message);
-	lprf->phy_status.spi_message.context = lprf;
-	lprf->phy_status.spi_message.spi = spi;
-	lprf->phy_status.spi_transfer.len = 1;
-	lprf->phy_status.spi_transfer.tx_buf = lprf->phy_status.tx_buf;
-	lprf->phy_status.spi_transfer.rx_buf = lprf->phy_status.rx_buf;
-	spi_message_add_tail(&lprf->phy_status.spi_transfer,
-			&lprf->phy_status.spi_message);
-
-	spi_message_init(&lprf->state_change.spi_message);
-	lprf->state_change.spi_message.context = lprf;
-	lprf->state_change.spi_message.spi = spi;
-	lprf->state_change.spi_transfer.len = 3;
-	lprf->state_change.spi_transfer.tx_buf = lprf->state_change.tx_buf;
-	lprf->state_change.spi_transfer.rx_buf = lprf->state_change.rx_buf;
-	spi_message_add_tail(&lprf->state_change.spi_transfer,
-			&lprf->state_change.spi_message);
-
+static void init_char_driver(void)
+{
 	init_waitqueue_head(&lprf_char_driver_interface.wait_for_rx_data);
 	init_waitqueue_head(&lprf_char_driver_interface.wait_for_tx_ready);
+}
+
+static int lprf_probe(struct spi_device *spi)
+{
+	int ret = 0;
+	struct lprf_local *lprf = 0;
+	struct lprf_state_change *state_change = 0;
+	struct lprf_phy_status *phy_status = 0;
+	struct ieee802154_hw *ieee802154_hw = 0;
+	PRINT_DEBUG( "Call lprf_probe");
+
+	ieee802154_hw = ieee802154_alloc_hw(sizeof(*lprf),
+			&ieee802154_lprf_callbacks);
+	if( ieee802154_hw == 0)
+		return -ENOMEM;
+	PRINT_DEBUG("Successfully allocated ieee802154_hw structure");
+
+	lprf = ieee802154_hw->priv;
+	lprf->ieee802154_hw = ieee802154_hw;
+	state_change = &lprf->state_change;
+	phy_status = &lprf->phy_status;
+
+	/* Init structs */
+	init_lprf_local(lprf, spi);
+	init_phy_status(phy_status, lprf, spi);
+	init_state_change(state_change, lprf, spi);
+	init_char_driver();
 
 	ieee802154_hw->parent = &lprf->spi_device->dev;
 	ieee802154_random_extended_addr(&ieee802154_hw->phy->perm_extended_addr);
@@ -1449,8 +1457,6 @@ static int lprf_probe(struct spi_device *spi)
 	if (IS_ERR(lprf->regmap)) {
 		PRINT_DEBUG( "Failed to allocate register map: %d", (int) PTR_ERR(lprf->regmap) );
 	}
-
-	PRINT_DEBUG( "successfully initialized Register map");
 
 	ret = lprf_detect_device(lprf);
 	if(ret)
