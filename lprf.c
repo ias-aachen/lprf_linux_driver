@@ -1033,6 +1033,13 @@ static int lprf_ieee802154_energy_detection(struct ieee802154_hw *hw, u8 *level)
 	return 0;
 }
 
+static int
+lprf_set_promiscuous_mode(struct ieee802154_hw *hw, const bool on)
+{
+	PRINT_DEBUG("Set promiscuous mode");
+	return 0;
+}
+
 static const struct ieee802154_ops  ieee802154_lprf_callbacks = {
 	.owner = THIS_MODULE,
 	.start = lprf_start_ieee802154,
@@ -1048,7 +1055,7 @@ static const struct ieee802154_ops  ieee802154_lprf_callbacks = {
 	.set_cca_ed_level = 0,
 	.set_csma_params = 0,	   /* Disabled in hw_flags */
 	.set_frame_retries = 0,	   /* Disabled in hw_flags */
-	.set_promiscuous_mode = 0, /* Disabled in hw_flags */
+	.set_promiscuous_mode = lprf_set_promiscuous_mode,
 };
 
 
@@ -1420,7 +1427,7 @@ static int lprf_detect_device(struct lprf_local *lprf)
 	}
 
 
-	lprf->hw->flags = 0; /* TODO Promiscous mode */
+	lprf->hw->flags = IEEE802154_HW_PROMISCUOUS;
 
 	lprf->hw->phy->flags = WPAN_PHY_FLAG_TXPOWER;
 
