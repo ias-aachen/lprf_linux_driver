@@ -55,7 +55,7 @@ struct lprf_state_change;
 static int init_lprf_hardware(struct lprf_local *lprf);
 static inline void lprf_start_polling_timer(struct lprf_local *lprf,
 		ktime_t first_interval);
-static inline void lprf_stop_rx_polling(struct lprf_local *lprf);
+static inline void lprf_stop_polling(struct lprf_local *lprf);
 static int lprf_start_frame_write(struct lprf_local *lprf);
 static void read_lprf_fifo(struct lprf_local *lprf);
 static void lprf_evaluate_phy_status(struct lprf_local *lprf,
@@ -852,7 +852,7 @@ static void read_lprf_fifo(struct lprf_local *lprf)
 	int ret = 0;
 	struct lprf_state_change *state_change = &lprf->state_change;
 	state_change->spi_message.complete = __lprf_read_frame_complete;
-	state_change->spi_transfer.len = LPRF_MAX_BUF + 2;
+	state_change->spi_transfer.len = MAX_SPI_BUFFER_SIZE;
 
 	memset(state_change->tx_buf, 0, sizeof(state_change->tx_buf));
 	state_change->tx_buf[0] = FRMR;
@@ -888,7 +888,7 @@ static inline void lprf_start_polling_timer(struct lprf_local *lprf,
 				HRTIMER_MODE_REL);
 }
 
-static inline void lprf_stop_rx_polling(struct lprf_local *lprf)
+static inline void lprf_stop_polling(struct lprf_local *lprf)
 {
 	atomic_set(&lprf->rx_polling_active, 0);
 	hrtimer_cancel(&lprf->rx_polling_timer);
@@ -910,7 +910,7 @@ static int lprf_start_ieee802154(struct ieee802154_hw *hw)
 static void lprf_stop_ieee802154(struct ieee802154_hw *hw)
 {
 	struct lprf_local *lprf = hw->priv;
-	lprf_stop_rx_polling(lprf);
+	lprf_stop_polling(lprf);
 
 	/* Wait some time to make sure all pending communication finished*/
 	usleep_range(900, 1000);
@@ -1097,7 +1097,7 @@ ssize_t lprf_write_char_device(struct file *filp, const char __user *buf,
 			!lprf->tx_skb);
 	}
 
-	bytes_to_copy = count < LPRF_MAX_BUF ? count : LPRF_MAX_BUF;
+	bytes_to_copy = count < FRAME_LENGTH ? count : FRAME_LENGTH;
 	skb = dev_alloc_skb(bytes_to_copy);
 	if (!skb)
 		return -ENOMEM;

@@ -42,10 +42,8 @@
  * header + 1 byte physical header + 2 extra bytes just to be safe and get no
  * problems during post processing like shifting the received bytes. */
 #define FRAME_LENGTH 135
-#define LPRF_MAX_BUF (FRAME_LENGTH + 2)
+#define MAX_SPI_BUFFER_SIZE (FRAME_LENGTH + 2)
 #define KBIT_RATE 2000
-#define MAX_SPI_BUFFER_SIZE (LPRF_MAX_BUF + 2)
-#define MAX_STATE_CHANGE_RETRIES 10
 
 #define RX_POLLING_INTERVAL ktime_set(0, 5000000)
 #define RX_RX_INTERVAL ktime_set(0, 600000)
