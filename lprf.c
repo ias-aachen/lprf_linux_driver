@@ -109,7 +109,7 @@ struct lprf_local {
 	struct regmap *regmap;
 	struct cdev my_char_dev;
 	struct hrtimer rx_polling_timer;
-	struct ieee802154_hw *ieee802154_hw;
+	struct ieee802154_hw *hw;
 	atomic_t rx_polling_active;
 
 	struct lprf_phy_status phy_status;
@@ -497,7 +497,7 @@ static void lprf_tx_complete(struct lprf_local *lprf)
 	if (lprf->skb_from_char_driver)
 		kfree_skb(skb_temp);
 	else
-		ieee802154_xmit_complete(lprf->ieee802154_hw, skb_temp, false);
+		ieee802154_xmit_complete(lprf->hw, skb_temp, false);
 	lprf->skb_from_char_driver = false;
 	lprf->state_change.tx_complete = false;
 	wake_up(&lprf_char_driver_interface.wait_for_tx_ready);
@@ -696,7 +696,7 @@ static int lprf_receive_ieee802154_data(struct lprf_local *lprf,
 	}
 
 	memcpy(skb_put(skb, frame_length), buffer + 1, frame_length);
-	ieee802154_rx_irqsafe(lprf->ieee802154_hw, skb, lqi);
+	ieee802154_rx_irqsafe(lprf->hw, skb, lqi);
 
 	return ret;
 }
@@ -984,6 +984,27 @@ lprf_set_ieee802154_channel(struct ieee802154_hw *hw,u8 page, u8 channel)
 	return ret;
 }
 
+/* TODO actually characterize power, values in 0.01dBm */
+static const s32 lprf_tx_powers[] = {
+		0, 100, 200, 300, 400, 500, 600, 700, 800, 900,
+		1000, 1100, 1200, 1300, 1400, 1500
+};
+
+static int lprf_set_tx_power(struct ieee802154_hw *hw, s32 power)
+{
+	int i;
+	struct lprf_local *lprf = hw->priv;
+
+	for (i = 0; i < lprf->hw->phy->supported.tx_powers_size; i++) {
+		if (lprf->hw->phy->supported.tx_powers[i] == power) {
+			PRINT_DEBUG("Set SR_TX_PWR_CTRL to %d", i);
+			return lprf_write_subreg(lprf, SR_TX_PWR_CTRL, i);
+		}
+	}
+
+	return -EINVAL;
+}
+
 static int
 lprf_xmit_ieee802154_async(struct ieee802154_hw *hw, struct sk_buff *skb)
 {
@@ -1021,7 +1042,7 @@ static const struct ieee802154_ops  ieee802154_lprf_callbacks = {
 	.ed = lprf_ieee802154_energy_detection, /* not supported by hardware */
 	.set_channel = lprf_set_ieee802154_channel,
 	.set_hw_addr_filt = 0,
-	.set_txpower = 0,
+	.set_txpower = lprf_set_tx_power,
 	.set_lbt = 0,		   /* Disabled in hw_flags */
 	.set_cca_mode = 0,
 	.set_cca_ed_level = 0,
@@ -1368,9 +1389,9 @@ static int init_lprf_hardware(struct lprf_local *lprf)
 	lprf->state_change.dem_main_value = value;
 
 	/* Set PLL to correct RF channel */
-	lprf_set_ieee802154_channel(lprf->ieee802154_hw,
-			lprf->ieee802154_hw->phy->current_page,
-			lprf->ieee802154_hw->phy->current_channel);
+	lprf_set_ieee802154_channel(lprf->hw,
+			lprf->hw->phy->current_page,
+			lprf->hw->phy->current_channel);
 
 	return 0;
 }
@@ -1399,24 +1420,25 @@ static int lprf_detect_device(struct lprf_local *lprf)
 	}
 
 
-	lprf->ieee802154_hw->flags = 0; /* TODO Promiscous mode */
+	lprf->hw->flags = 0; /* TODO Promiscous mode */
 
-	lprf->ieee802154_hw->phy->flags = 0; /* TODO WPAN_PHY_FLAG_TXPOWER */
+	lprf->hw->phy->flags = WPAN_PHY_FLAG_TXPOWER;
 
-	lprf->ieee802154_hw->phy->supported.cca_modes = 0;
-	lprf->ieee802154_hw->phy->supported.cca_opts = 0;
-	lprf->ieee802154_hw->phy->supported.cca_ed_levels = 0;
-	lprf->ieee802154_hw->phy->supported.cca_ed_levels_size = 0;
-	lprf->ieee802154_hw->phy->cca.mode = NL802154_CCA_ENERGY;
+	lprf->hw->phy->supported.cca_modes = 0;
+	lprf->hw->phy->supported.cca_opts = 0;
+	lprf->hw->phy->supported.cca_ed_levels = 0;
+	lprf->hw->phy->supported.cca_ed_levels_size = 0;
+	lprf->hw->phy->cca.mode = NL802154_CCA_ENERGY;
 
-	lprf->ieee802154_hw->phy->supported.channels[0] = 0x7FFF800;
-	lprf->ieee802154_hw->phy->current_channel = 11;
-	lprf->ieee802154_hw->phy->symbol_duration = 16;
-	lprf->ieee802154_hw->phy->supported.tx_powers = 0;
-	lprf->ieee802154_hw->phy->supported.tx_powers_size = 0;
+	lprf->hw->phy->supported.channels[0] = 0x7FFF800;
+	lprf->hw->phy->current_channel = 11;
+	lprf->hw->phy->symbol_duration = 16;
+	lprf->hw->phy->supported.tx_powers = lprf_tx_powers;
+	lprf->hw->phy->supported.tx_powers_size =
+			ARRAY_SIZE(lprf_tx_powers);
 
-	lprf->ieee802154_hw->phy->cca_ed_level = 42;
-	lprf->ieee802154_hw->phy->transmit_power = 42;
+	lprf->hw->phy->cca_ed_level = 42;
+	lprf->hw->phy->transmit_power = 15;
 
 	dev_info(&lprf->spi_device->dev,"LPRF Chip found with Chip ID %X",
 			chip_id);
@@ -1484,7 +1506,7 @@ static int lprf_probe(struct spi_device *spi)
 	PRINT_DEBUG("Successfully allocated ieee802154_hw structure");
 
 	lprf = hw->priv;
-	lprf->ieee802154_hw = hw;
+	lprf->hw = hw;
 	state_change = &lprf->state_change;
 	phy_status = &lprf->phy_status;
 
@@ -1538,8 +1560,8 @@ static int lprf_remove(struct spi_device *spi)
 	/* TODO call lprf_stop_ieee802154 */
 	unregister_char_device(lprf);
 
-	ieee802154_unregister_hw(lprf->ieee802154_hw);
-	ieee802154_free_hw(lprf->ieee802154_hw);
+	ieee802154_unregister_hw(lprf->hw);
+	ieee802154_free_hw(lprf->hw);
 	dev_dbg(&spi->dev, "unregistered LPRF chip\n");
 
 	return 0;
