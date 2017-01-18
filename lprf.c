@@ -143,7 +143,6 @@ __lprf_write(struct lprf_local *lprf, unsigned int address, unsigned int value)
 {
 	int ret = 0;
 	ret = regmap_write(lprf->regmap, address, value);
-	// PRINT_KRIT( "Write value %X to LPRF register %X", value, address);
 	return ret;
 }
 
@@ -152,7 +151,6 @@ __lprf_read(struct lprf_local *lprf, unsigned int address, unsigned int *value)
 {
 	int ret = 0;
 	ret = regmap_read(lprf->regmap, address, value);
-	// PRINT_KRIT( "Read value %X from LPRF register %X", *value, address);
 	return ret;
 }
 
@@ -243,7 +241,7 @@ static bool lprf_reg_readable(struct device *dev, unsigned int reg)
 
 static bool lprf_reg_volatile(struct device *dev, unsigned int reg)
 {
-	// All Read Only Registers are volatile
+	/* All Read Only Registers are volatile */
 	if (lprf_is_read_only_reg(reg))
 		return true;
 
@@ -259,7 +257,7 @@ static bool lprf_reg_volatile(struct device *dev, unsigned int reg)
 
 static bool lprf_reg_precious(struct device *dev, unsigned int reg)
 {
-	// The LPRF-Chip has no precious register
+	/* The LPRF-Chip has no precious register */
 	return false;
 }
 
@@ -270,9 +268,8 @@ static const struct regmap_config lprf_regmap_spi_config = {
 	.val_bits = 8,
 	.read_flag_mask = 0x80,
 	.write_flag_mask = 0xc0,
-	.fast_io = 0, // use mutex or spinlock for locking
-	.max_register = 0xF3,
-	.use_single_rw = 1, // single read write commands or bulk read write
+	.fast_io = 0, /* use spinlock instead of mutex for locking */
+	.max_register = 0xF3, /* we do not support bulk read write */
 	.can_multi_write = 0,
 	.cache_type = REGCACHE_RBTREE,
 	.writeable_reg = lprf_reg_writeable,
@@ -281,7 +278,7 @@ static const struct regmap_config lprf_regmap_spi_config = {
 	.precious_reg = lprf_reg_precious,
 };
 
-// TODO async error Recover here
+/* TODO async error Recover here */
 
 static void lprf_async_write_register(struct lprf_state_change *state_change,
 		uint8_t address, uint8_t value,
@@ -293,18 +290,19 @@ static void lprf_async_write_register(struct lprf_state_change *state_change,
 	state_change->tx_buf[2] = value;
 	state_change->spi_transfer.len = 3;
 	state_change->spi_message.complete = complete;
-	ret = spi_async(state_change->lprf->spi_device, &state_change->spi_message);
+	ret = spi_async(state_change->lprf->spi_device,
+			&state_change->spi_message);
 	if (ret)
 		PRINT_DEBUG("Async_spi returned with error code %d", ret);
-	// TODO handle spi async error
+	/* TODO handle spi async error */
 }
 
 static void
 lprf_async_write_subreg(struct lprf_state_change *state_change,
-		uint8_t cached_reg_val, uint8_t addr, uint8_t mask, uint8_t shift,
+		uint8_t cached_val, uint8_t addr, uint8_t mask, uint8_t shift,
 		uint8_t data, void (*complete)(void *context))
 {
-	uint8_t reg_val = (cached_reg_val & ~mask) | (data << shift);
+	uint8_t reg_val = (cached_val & ~mask) | (data << shift);
 	lprf_async_write_register(state_change, addr, reg_val, complete);
 }
 
@@ -326,8 +324,7 @@ static int lprf_phy_status_async(struct lprf_phy_status *phy_status)
 {
 	int ret = 0;
 
-	if (atomic_inc_return(&phy_status->is_active) != 1)
-	{
+	if (atomic_inc_return(&phy_status->is_active) != 1) {
 		atomic_dec(&phy_status->is_active);
 		return -EBUSY;
 	}
@@ -336,7 +333,7 @@ static int lprf_phy_status_async(struct lprf_phy_status *phy_status)
 	ret = spi_async(phy_status->spi_device, &phy_status->spi_message);
 	if (ret)
 		PRINT_DEBUG("Async_spi returned with error code %d", ret);
-	// TODO handle spi async error
+	/* TODO handle spi async error */
 	return 0;
 }
 
@@ -351,7 +348,8 @@ static int lprf_phy_status_async(struct lprf_phy_status *phy_status)
  */
 
 /**
- * Calculates the RX Length counter based on the datarate and frame_length (assuming 32MHz clock speed on chip)
+ * Calculates the RX Length counter based on the datarate and frame_length
+ * (assuming 32MHz clock speed on chip)
  *
  * @kbitrate: over the air daterate in kb/s
  * @frame_length: frame length in bytes
@@ -359,7 +357,8 @@ static int lprf_phy_status_async(struct lprf_phy_status *phy_status)
 static inline int get_rx_length_counter_H(int kbit_rate, int frame_length)
 {
 	const int chip_speed_kHz = 32000;
-	return 8 * frame_length * chip_speed_kHz / kbit_rate + 4 * chip_speed_kHz / kbit_rate;
+	return 8 * frame_length * chip_speed_kHz / kbit_rate +
+			4 * chip_speed_kHz / kbit_rate;
 }
 
 /**
@@ -381,26 +380,25 @@ static inline void reverse_bit_order(uint8_t *byte)
  */
 static int calc_vco_tune(int channel_number)
 {
-    switch(channel_number)
-    {
-    case 11: return 237;
-    case 12: return 235;
-    case 13: return 234;
-    case 14: return 232;
-    case 15: return 231;
-    case 16: return 223;
-    case 17: return 222;
-    case 18: return 220;
-    case 19: return 213;
-    case 20: return 212;
-    case 21: return 210;
-    case 22: return 209;
-    case 23: return 207;
-    case 24: return 206;
-    case 25: return 206;
-    case 26: return 204;
-    default: return 0;
-    }
+	switch(channel_number) {
+	case 11: return 237;
+	case 12: return 235;
+	case 13: return 234;
+	case 14: return 232;
+	case 15: return 231;
+	case 16: return 223;
+	case 17: return 222;
+	case 18: return 220;
+	case 19: return 213;
+	case 20: return 212;
+	case 21: return 210;
+	case 22: return 209;
+	case 23: return 207;
+	case 24: return 206;
+	case 25: return 206;
+	case 26: return 204;
+	default: return 0;
+	}
 }
 
 /*
@@ -410,13 +408,12 @@ static int calc_vco_tune(int channel_number)
  */
 static inline uint32_t calculate_rf_center_freq(int channel_number)
 {
-	if (channel_number >= 11 && channel_number <= 26)
-	{
+	if (channel_number >= 11 && channel_number <= 26) {
 		uint32_t f_rf_MHz = 2405 + 5 * (channel_number - 11);
 		return f_rf_MHz * 1000000U;
 	}
 
-	// TODO 800MHz support
+	/* TODO 800MHz support */
 
 	return 0;
 }
@@ -435,8 +432,7 @@ static int lprf_calculate_pll_values(uint32_t rf_frequency,
 {
 	uint32_t f_lo = 0;
 
-	if (rf_frequency > 2000000000) // use 2.4 GHz frontend
-	{
+	if (rf_frequency > 2000000000) {
 		f_lo = ( rf_frequency - if_frequency) / 3 * 2;
 		*int_val = f_lo  / 16000000;
 
@@ -452,7 +448,7 @@ static int lprf_calculate_pll_values(uint32_t rf_frequency,
 		return 0;
 	}
 
-	// TODO 800MHz support
+	/* TODO 800MHz support */
 
 	return -EINVAL;
 }
@@ -595,8 +591,7 @@ static inline int number_of_equal_bits(uint32_t x1, uint32_t x2,
 	int counter = 0;
 	uint32_t combined = ~(x1 ^ x2);
 
-	for (i = 0; i < number_of_bits; ++i)
-	{
+	for (i = 0; i < number_of_bits; ++i) {
 		counter += combined & 1;
 		combined >>= 1;
 	}
@@ -644,8 +639,7 @@ static int find_SFD_and_shift_data(uint8_t *data, int *data_length,
 				((data[sfd_start_postion] << 8) |
 				data[sfd_start_postion+1]) >> 6, 8);
 
-	if(no_shift < 7 && one_bit_shift < 7 && two_bit_shift < 7)
-	{
+	if(no_shift < 7 && one_bit_shift < 7 && two_bit_shift < 7) {
 		PRINT_KRIT("SFD not found.");
 		return 0;
 	}
@@ -657,8 +651,7 @@ static int find_SFD_and_shift_data(uint8_t *data, int *data_length,
 
 	PRINT_KRIT("Data will be shifted by %d bits to the right", shift);
 
-	for (i = 0; i < *data_length - sfd_start_postion - 1; ++i)
-	{
+	for (i = 0; i < *data_length - sfd_start_postion - 1; ++i) {
 		data[i] = ((data[i + data_start_position] << 8) |
 				data[i + data_start_position + 1]) >> shift;
 	}
@@ -697,7 +690,8 @@ static int lprf_receive_ieee802154_data(struct lprf_local *lprf,
 
 	skb = dev_alloc_skb(frame_length);
 	if (!skb) {
-		dev_vdbg(&lprf->spi_device->dev, "failed to allocate sk_buff\n");
+		dev_vdbg(&lprf->spi_device->dev,
+				"failed to allocate sk_buff\n");
 		return -ENOMEM;
 	}
 
@@ -710,8 +704,7 @@ static int lprf_receive_ieee802154_data(struct lprf_local *lprf,
 static void preprocess_received_data(uint8_t *data, int length)
 {
 	int i = 0;
-	for (i = 0; i < length; ++i)
-	{
+	for (i = 0; i < length; ++i) {
 		reverse_bit_order(&data[i]);
 		data[i] = ~data[i];
 	}
@@ -736,7 +729,7 @@ static void __lprf_read_frame_complete(void *context)
 
 	PRINT_KRIT("Frame read via SPI completed");
 
-	data_buf = state_change->rx_buf + 2; // first two bytes of rx_buf do not contain data
+	data_buf = state_change->rx_buf + 2;
 
 	phy_status = state_change->rx_buf[0];
 	length = state_change->rx_buf[1];
@@ -770,7 +763,7 @@ static void read_lprf_fifo(struct lprf_local *lprf)
 	ret = spi_async(lprf->spi_device, &state_change->spi_message);
 	if (ret)
 		PRINT_DEBUG("Async_spi returned with error code %d", ret);
-	// TODO handle SPI error
+	/* TODO handle SPI error */
 }
 
 /*
@@ -786,8 +779,7 @@ static void lprf_rx_resets(void *context)
 	struct lprf_local *lprf = context;
 	struct lprf_state_change *state_change = &lprf->state_change;
 
-	switch (reset_counter)
-	{
+	switch (reset_counter) {
 	case 0:
 		lprf_async_write_register(state_change, RG_SM_MAIN,
 				0x05, lprf_rx_resets);
@@ -840,8 +832,7 @@ static void lprf_async_state_change(struct lprf_local *lprf, uint8_t state)
 	struct lprf_state_change *state_change = &lprf->state_change;
 	state_change->to_state = state;
 
-	switch (state)
-	{
+	switch (state) {
 	case STATE_CMD_RX:
 		PRINT_KRIT("Will change state to RX...");
 		lprf_rx_resets(lprf);
@@ -861,7 +852,7 @@ static void lprf_async_state_change(struct lprf_local *lprf, uint8_t state)
 static void lprf_evaluate_phy_status(struct lprf_local *lprf,
 		struct lprf_state_change *state_change, uint8_t phy_status)
 {
-	PRINT_KRIT("In phy_status in lprf_evaluate_phy_status 0x%X", phy_status);
+	PRINT_KRIT("Phy_status in lprf_evaluate_phy_status 0x%X", phy_status);
 
 	if (atomic_inc_return(&state_change->transition_in_progress) != 1) {
 		atomic_dec(&state_change->transition_in_progress);
@@ -942,7 +933,8 @@ static void lprf_stop_ieee802154(struct ieee802154_hw *hw)
 	lprf_write_subreg(lprf, SR_SM_RESETB,   1);
 }
 
-static int lprf_set_ieee802154_channel(struct ieee802154_hw *hw, u8 page, u8 channel)
+static int
+lprf_set_ieee802154_channel(struct ieee802154_hw *hw,u8 page, u8 channel)
 {
 	int pll_int = 0;
 	int pll_frac = 0;
@@ -951,8 +943,7 @@ static int lprf_set_ieee802154_channel(struct ieee802154_hw *hw, u8 page, u8 cha
 	int vco_tune = 0;
 	struct lprf_local *lprf = hw->priv;
 
-	if (page != 0)
-	{
+	if (page != 0) {
 		PRINT_DEBUG("Invalid channel page %d.", page);
 		return -EINVAL;
 	}
@@ -960,7 +951,7 @@ static int lprf_set_ieee802154_channel(struct ieee802154_hw *hw, u8 page, u8 cha
 	rf_freq = calculate_rf_center_freq(channel);
 	PRINT_DEBUG("RF-freq = %u", rf_freq);
 
-	// for RX
+	/* for RX */
 	ret = lprf_calculate_pll_values(rf_freq, 1000000, &pll_int, &pll_frac);
 
 	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_RX_CHAN_INT, pll_int) );
@@ -973,7 +964,7 @@ static int lprf_set_ieee802154_channel(struct ieee802154_hw *hw, u8 page, u8 cha
 	PRINT_DEBUG("Set RX PLL values to int=%d and frac=0x%.6x",
 			pll_int, pll_frac);
 
-	// for TX
+	/* for TX */
 	ret = lprf_calculate_pll_values(rf_freq, 0, &pll_int, &pll_frac);
 
 	RETURN_ON_ERROR( lprf_write_subreg(lprf, SR_TX_CHAN_INT, pll_int) );
@@ -993,13 +984,13 @@ static int lprf_set_ieee802154_channel(struct ieee802154_hw *hw, u8 page, u8 cha
 	return ret;
 }
 
-static int lprf_xmit_ieee802154_async(struct ieee802154_hw *hw, struct sk_buff *skb)
+static int
+lprf_xmit_ieee802154_async(struct ieee802154_hw *hw, struct sk_buff *skb)
 {
 	int rc = 0;
 	struct lprf_local *lprf = hw->priv;
 
-	if (lprf->tx_skb)
-	{
+	if (lprf->tx_skb) {
 		PRINT_DEBUG("ERROR in xmit, buffer not empty yet");
 		return -EBUSY;
 	}
@@ -1016,7 +1007,8 @@ static int lprf_xmit_ieee802154_async(struct ieee802154_hw *hw, struct sk_buff *
 
 static int lprf_ieee802154_energy_detection(struct ieee802154_hw *hw, u8 *level)
 {
-	PRINT_DEBUG("Called unimplemented function lprf_ieee802154_energy_detection()");
+	PRINT_DEBUG("Called unsupported function "
+			"lprf_ieee802154_energy_detection()");
 	return 0;
 }
 
@@ -1024,18 +1016,18 @@ static const struct ieee802154_ops  ieee802154_lprf_callbacks = {
 	.owner = THIS_MODULE,
 	.start = lprf_start_ieee802154,
 	.stop = lprf_stop_ieee802154,
-	.xmit_sync = 0, // should not be used anymore
-	.xmit_async = lprf_xmit_ieee802154_async, // needs to be implemented for Tx
-	.ed = lprf_ieee802154_energy_detection, // can we support this? Can not be disabled in hw_flags
+	.xmit_sync = 0, /* should not be used anymore */
+	.xmit_async = lprf_xmit_ieee802154_async,
+	.ed = lprf_ieee802154_energy_detection, /* not supported by hardware */
 	.set_channel = lprf_set_ieee802154_channel,
 	.set_hw_addr_filt = 0,
-	.set_txpower = 0,	// needs to be implemented for tx (seems to work without)
-	.set_lbt = 0,		// Disabled in hw_flags
-	.set_cca_mode = 0,	// can we support this? Can not be disabled in hw_flags (seems to work without)
-	.set_cca_ed_level = 0,	// can we support this? Can not be disabled in hw_flags (seems to work without)
-	.set_csma_params = 0,	// Disabled in hw_flags
-	.set_frame_retries = 0,	// Disabled in hw_flags
-	.set_promiscuous_mode = 0, // Disabled in hw_flags
+	.set_txpower = 0,
+	.set_lbt = 0,		   /* Disabled in hw_flags */
+	.set_cca_mode = 0,
+	.set_cca_ed_level = 0,
+	.set_csma_params = 0,	   /* Disabled in hw_flags */
+	.set_frame_retries = 0,	   /* Disabled in hw_flags */
+	.set_promiscuous_mode = 0, /* Disabled in hw_flags */
 };
 
 
@@ -1052,11 +1044,10 @@ int lprf_open_char_device(struct inode *inode, struct file *filp)
 {
 	struct lprf_local *lprf = 0;
 	int ret = 0;
-	lprf = container_of(inode->i_cdev, struct lprf_local, my_char_dev);    //http://stackoverflow.com/questions/15832301/understanding-container-of-macro-in-linux-kerne0;
+	lprf = container_of(inode->i_cdev, struct lprf_local, my_char_dev);
 	filp->private_data = lprf;
 
-	if (atomic_inc_return(&lprf_char_driver_interface.is_open) != 1)
-	{
+	if (atomic_inc_return(&lprf_char_driver_interface.is_open) != 1) {
 		atomic_dec(&lprf_char_driver_interface.is_open);
 		return -EMFILE;
 	}
@@ -1087,7 +1078,8 @@ int lprf_release_char_device(struct inode *inode, struct file *filp)
 	return 0;
 }
 
-ssize_t lprf_read_char_device(struct file *filp, char __user *buf, size_t count, loff_t *f_pos)
+ssize_t lprf_read_char_device(struct file *filp,
+		char __user *buf, size_t count, loff_t *f_pos)
 {
 	int buffer_length = 0;
 	int bytes_to_copy = 0;
@@ -1096,12 +1088,12 @@ ssize_t lprf_read_char_device(struct file *filp, char __user *buf, size_t count,
 
 	PRINT_KRIT("Read from user space with buffer size %d requested", count);
 
-	if( kfifo_is_empty(&lprf_char_driver_interface.data_buffer) )
-	{
-		PRINT_KRIT("Read_char_device goes to sleep because of empty buffer.");
+	if( kfifo_is_empty(&lprf_char_driver_interface.data_buffer) ) {
+		PRINT_KRIT("Read_char_device goes to sleep.");
 		ret = wait_event_interruptible(
-				lprf_char_driver_interface.wait_for_rx_data,
-			!kfifo_is_empty(&lprf_char_driver_interface.data_buffer));
+			lprf_char_driver_interface.wait_for_rx_data,
+			!kfifo_is_empty(
+				&lprf_char_driver_interface.data_buffer));
 		if (ret < 0)
 			return ret;
 		PRINT_KRIT("Returned from sleep in read_char_device.");
@@ -1133,7 +1125,7 @@ ssize_t lprf_write_char_device(struct file *filp, const char __user *buf,
 	PRINT_KRIT("Enter write char device");
 
 	if (lprf->tx_skb) {
-		PRINT_KRIT("Read_char_device goes to sleep because of empty buffer.");
+		PRINT_KRIT("Read_char_device goes to sleep.");
 		ret = wait_event_interruptible(
 				lprf_char_driver_interface.wait_for_tx_ready,
 			!lprf->tx_skb);
@@ -1163,21 +1155,21 @@ ssize_t lprf_write_char_device(struct file *filp, const char __user *buf,
 }
 
 /**
- * Defines the callback functions for file operations when the lprf device is used
- * with the char driver interface
+ * Defines the callback functions for file operations
+ * when the lprf device is used with the char driver interface
  */
 static const struct file_operations lprf_fops = {
 	.owner =             THIS_MODULE,
 	.read =              lprf_read_char_device,
 	.write =             lprf_write_char_device,
-	.unlocked_ioctl =    0, // can be implemented for additional control
+	.unlocked_ioctl =    0, /* can be implemented for additional control */
 	.open =              lprf_open_char_device,
 	.release =           lprf_release_char_device,
 };
 
 /**
- * Registers the LPRF-Chip as char-device. Make sure to execute this function only
- * after the chip has been fully initialized and is ready to use.
+ * Registers the LPRF-Chip as char-device. Make sure to execute this function
+ * only after the chip has been fully initialized and is ready to use.
  */
 static int register_char_device(struct lprf_local *lprf)
 {
@@ -1185,8 +1177,7 @@ static int register_char_device(struct lprf_local *lprf)
 	dev_t dev_number = 0;
 
 	ret = alloc_chrdev_region(&dev_number, 0, 1, "lprf");
-	if (ret)
-	{
+	if (ret) {
 		PRINT_DEBUG("Dynamic Device number allocation failed");
 		return ret;
 	}
@@ -1194,8 +1185,7 @@ static int register_char_device(struct lprf_local *lprf)
 	cdev_init(&lprf->my_char_dev, &lprf_fops);
 	lprf->my_char_dev.owner = THIS_MODULE;
 	ret = cdev_add (&lprf->my_char_dev, dev_number, 1);
-	if (ret)
-	{
+	if (ret) {
 		goto unregister;
 	}
 	PRINT_DEBUG("Successfully added char driver to system");
@@ -1228,7 +1218,8 @@ static int init_lprf_hardware(struct lprf_local *lprf)
 {
 	int ret = 0;
 	unsigned int value = 0;
-	int rx_counter_length = get_rx_length_counter_H(KBIT_RATE, FRAME_LENGTH);
+	int rx_counter_length =
+			get_rx_length_counter_H(KBIT_RATE, FRAME_LENGTH);
 
 	/* Reset all and load initial values */
 	RETURN_ON_ERROR(__lprf_write(lprf, RG_GLOBAL_RESETB,  0x00));
@@ -1401,17 +1392,16 @@ static int lprf_detect_device(struct lprf_local *lprf)
 	RETURN_ON_ERROR( __lprf_read(lprf, RG_CHIP_ID_L, &rx_buf) );
 	chip_id |= rx_buf;
 
-	if (chip_id != 0x1a51)
-	{
+	if (chip_id != 0x1a51) {
 		dev_err(&lprf->spi_device->dev, "Device with invalid "
 				"Chip ID %X found", chip_id);
 		return -ENODEV;
 	}
 
 
-	lprf->ieee802154_hw->flags = 0; // TODO Promiscous mode
+	lprf->ieee802154_hw->flags = 0; /* TODO Promiscous mode */
 
-	lprf->ieee802154_hw->phy->flags = 0; // TODO WPAN_PHY_FLAG_TXPOWER;
+	lprf->ieee802154_hw->phy->flags = 0; /* TODO WPAN_PHY_FLAG_TXPOWER */
 
 	lprf->ieee802154_hw->phy->supported.cca_modes = 0;
 	lprf->ieee802154_hw->phy->supported.cca_opts = 0;
@@ -1428,7 +1418,8 @@ static int lprf_detect_device(struct lprf_local *lprf)
 	lprf->ieee802154_hw->phy->cca_ed_level = 42;
 	lprf->ieee802154_hw->phy->transmit_power = 42;
 
-	dev_info(&lprf->spi_device->dev,"LPRF Chip found with Chip ID %X", chip_id);
+	dev_info(&lprf->spi_device->dev,"LPRF Chip found with Chip ID %X",
+			chip_id);
 	return 0;
 
 }
@@ -1483,17 +1474,17 @@ static int lprf_probe(struct spi_device *spi)
 	struct lprf_local *lprf = 0;
 	struct lprf_state_change *state_change = 0;
 	struct lprf_phy_status *phy_status = 0;
-	struct ieee802154_hw *ieee802154_hw = 0;
+	struct ieee802154_hw *hw = 0;
 	PRINT_DEBUG( "Call lprf_probe");
 
-	ieee802154_hw = ieee802154_alloc_hw(sizeof(*lprf),
+	hw = ieee802154_alloc_hw(sizeof(*lprf),
 			&ieee802154_lprf_callbacks);
-	if( ieee802154_hw == 0)
+	if( hw == 0)
 		return -ENOMEM;
 	PRINT_DEBUG("Successfully allocated ieee802154_hw structure");
 
-	lprf = ieee802154_hw->priv;
-	lprf->ieee802154_hw = ieee802154_hw;
+	lprf = hw->priv;
+	lprf->ieee802154_hw = hw;
 	state_change = &lprf->state_change;
 	phy_status = &lprf->phy_status;
 
@@ -1503,8 +1494,8 @@ static int lprf_probe(struct spi_device *spi)
 	init_state_change(state_change, lprf, spi);
 	init_char_driver();
 
-	ieee802154_hw->parent = &lprf->spi_device->dev;
-	ieee802154_random_extended_addr(&ieee802154_hw->phy->perm_extended_addr);
+	hw->parent = &lprf->spi_device->dev;
+	ieee802154_random_extended_addr(&hw->phy->perm_extended_addr);
 
 	lprf->regmap = devm_regmap_init_spi(spi, &lprf_regmap_spi_config);
 	if (IS_ERR(lprf->regmap)) {
@@ -1525,7 +1516,7 @@ static int lprf_probe(struct spi_device *spi)
 	if(ret)
 		goto free_lprf;
 
-	ret = ieee802154_register_hw(ieee802154_hw);
+	ret = ieee802154_register_hw(hw);
 	if (ret)
 		goto unregister_char_device;
 	PRINT_DEBUG("Successfully registered IEEE 802.15.4 device");
@@ -1535,7 +1526,7 @@ static int lprf_probe(struct spi_device *spi)
 unregister_char_device:
 	unregister_char_device(lprf);
 free_lprf:
-	ieee802154_free_hw(ieee802154_hw);
+	ieee802154_free_hw(hw);
 
 	return ret;
 }
@@ -1544,7 +1535,7 @@ static int lprf_remove(struct spi_device *spi)
 {
 	struct lprf_local *lprf = spi_get_drvdata(spi);
 
-	// TODO call lprf_stop_ieee802154
+	/* TODO call lprf_stop_ieee802154 */
 	unregister_char_device(lprf);
 
 	ieee802154_unregister_hw(lprf->ieee802154_hw);
