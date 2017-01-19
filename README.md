@@ -229,6 +229,23 @@ ssh pi@137.226.200.211 'tshark -i monitor0 -F pcap -w -' | wireshark -k -i -
 
 This will start tshark on the Raspberry Pi via SSH. The output of tshark is redirected to the host computer using a pipe and serves as input for wireshark.
 
+## Debugging via char driver interface
+Kernel Modules can implement a char driver interface that enables user space programs to write data to and read from a driver by accessing a device file. For proper function of the LPRF chip with the IEEE 802.15.4 stack a char driver interface is not needed. However, this driver implements this interface to get the possibility of reading and writing raw data without using the IEEE 802.15.4 stack for debugging purposes.
+
+### Reading raw data
+To read raw data as it comes from the chip you can just read from /dev/lprf. One way to do this is to use the hexdump tool xxd:
+```
+xxd -b -c 8 /dev/lprf
+```
+For more info type `xxd -h`.
+
+### Writing raw data
+You can send raw data by writing data to /dev/lprf. Note that the driver will still append the IEEE 802.15.4 synchronization header and physical header. For writing to a device file you usually need administrator writes. To write some data N times to the chip you can use the following script.
+```
+sudo python3 write_to_char_driver.py -n <N>
+```
+For more information about this script you can type `python3 write_to_char_driver.py -h`.
+
 ## List of manual commands
 In the following there are some commands listed, that can be used instead of the automatic configuration script.
 
@@ -251,7 +268,7 @@ lsmod
 ```
 
 ### Char Driver
-Kernel Modules can implement a char driver interface that enables user space programs to write data to and read from a driver by accessing a device file. For proper function of the LPRF chip with the IEEE 802.15.4 stack a char driver interface is not needed. However, this driver implements this interface to get the possibility of reading and writing raw data without using the IEEE 802.15.4 stack for debugging purposes.
+
 ```
 major=$(awk "\$2==\"lprf\" {print \$1}" /proc/devices)
 sudo rm -f /dev/lprf
