@@ -278,7 +278,36 @@ static const struct regmap_config lprf_regmap_spi_config = {
 	.precious_reg = lprf_reg_precious,
 };
 
-/* TODO async error Recover here */
+static void lprf_async_write_register(struct lprf_state_change *state_change,
+		uint8_t address, uint8_t value,
+		void (*complete)(void *context));
+static int lprf_phy_status_async(struct lprf_phy_status *phy_status);
+static inline void lprf_stop_polling(struct lprf_local *lprf);
+
+static void lprf_async_error_recover_callback(void *context)
+{
+	struct lprf_local *lprf = context;
+	atomic_set(&lprf->rx_polling_active, 1);
+	lprf_phy_status_async(&lprf->phy_status);
+}
+
+static void lprf_async_error_recover(void *context)
+{
+	struct lprf_local *lprf = context;
+	struct lprf_state_change *state_change = &lprf->state_change;
+
+	lprf_async_write_register(state_change, RG_GLOBAL_RESETB, 0xff,
+			lprf_async_error_recover_callback);
+}
+
+static inline void lprf_async_error(struct lprf_local *lprf,
+		struct lprf_state_change *state_change, int rc)
+{
+	dev_err(&lprf->spi_device->dev, "spi_async error %d\n", rc);
+	lprf_stop_polling(lprf);
+	lprf_async_write_register(state_change,
+			RG_GLOBAL_RESETB, 0, lprf_async_error_recover);
+}
 
 static void lprf_async_write_register(struct lprf_state_change *state_change,
 		uint8_t address, uint8_t value,
@@ -293,8 +322,7 @@ static void lprf_async_write_register(struct lprf_state_change *state_change,
 	ret = spi_async(state_change->lprf->spi_device,
 			&state_change->spi_message);
 	if (ret)
-		PRINT_DEBUG("Async_spi returned with error code %d", ret);
-	/* TODO handle spi async error */
+		lprf_async_error(state_change->lprf, state_change, ret);
 }
 
 static void
@@ -305,7 +333,6 @@ lprf_async_write_subreg(struct lprf_state_change *state_change,
 	uint8_t reg_val = (cached_val & ~mask) | (data << shift);
 	lprf_async_write_register(state_change, addr, reg_val, complete);
 }
-
 
 static void lprf_evaluate_phy_status(struct lprf_local *lprf,
 		struct lprf_state_change *state_change, uint8_t phy_status);
@@ -323,6 +350,8 @@ static void lprf_phy_status_complete(void *context)
 static int lprf_phy_status_async(struct lprf_phy_status *phy_status)
 {
 	int ret = 0;
+	struct lprf_local *lprf = container_of(
+			phy_status, struct lprf_local, phy_status);
 
 	if (atomic_inc_return(&phy_status->is_active) != 1) {
 		atomic_dec(&phy_status->is_active);
@@ -332,8 +361,7 @@ static int lprf_phy_status_async(struct lprf_phy_status *phy_status)
 	phy_status->spi_message.complete = lprf_phy_status_complete;
 	ret = spi_async(phy_status->spi_device, &phy_status->spi_message);
 	if (ret)
-		PRINT_DEBUG("Async_spi returned with error code %d", ret);
-	/* TODO handle spi async error */
+		lprf_async_error(lprf, &lprf->state_change, ret);
 	return 0;
 }
 
@@ -762,8 +790,7 @@ static void read_lprf_fifo(struct lprf_local *lprf)
 
 	ret = spi_async(lprf->spi_device, &state_change->spi_message);
 	if (ret)
-		PRINT_DEBUG("Async_spi returned with error code %d", ret);
-	/* TODO handle SPI error */
+		lprf_async_error(lprf, state_change, ret);
 }
 
 /*
@@ -1564,7 +1591,7 @@ static int lprf_remove(struct spi_device *spi)
 {
 	struct lprf_local *lprf = spi_get_drvdata(spi);
 
-	/* TODO call lprf_stop_ieee802154 */
+	lprf_stop_ieee802154(lprf->hw);
 	unregister_char_device(lprf);
 
 	ieee802154_unregister_hw(lprf->hw);
