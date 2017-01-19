@@ -10,6 +10,12 @@ then
 	ip link set wpan0 down
 fi
 
+if ifconfig | grep "monitor0" &> /dev/null
+then
+	echo "Deactivate monitor0 interface..."
+	ip link set monitor0 down
+fi
+
 if lsmod | grep "lprf" &> /dev/null
 then
 	echo "Remove lprf kernel module from kernel..."

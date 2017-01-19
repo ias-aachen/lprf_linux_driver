@@ -10,6 +10,12 @@ then
 	ip link set wpan0 down
 fi
 
+if ifconfig | grep "monitor0" &> /dev/null
+then
+	echo "Deactivate monitor0 interface..."
+	ip link set monitor0 down
+fi
+
 if dtoverlay -l | grep "spi" &> /dev/null
 then
 	echo "Remove spi device tree overlay from kernel..."
