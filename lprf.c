@@ -1294,7 +1294,7 @@ static int init_lprf_hardware(struct lprf_local *lprf)
 	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_CTRL_ADC_MULTIBIT, 0));
 	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_CTRL_ADC_ENABLE,   1));
 	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_CTRL_ADC_BW_SEL,   1));
-	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_CTRL_ADC_BW_TUNE,  4));
+	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_CTRL_ADC_BW_TUNE,  5));
 	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_CTRL_ADC_DR_SEL,   2));
 
 	/* Polyphase Filter Setting */
