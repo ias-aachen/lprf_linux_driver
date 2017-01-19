@@ -206,6 +206,29 @@ To test the chip you can use the wpan-ping command
 wpan-ping -a 0xbeef -s 100 -c 5
 ```
 
+## Sniffing with Wireshark
+You can use the chip in monitor mode and watch the received packets via wireshark. Therefore you need to install wireshark on your host PC:
+```
+sudo apt-get install wireshark
+```
+
+On the Raspberry Pi you need to install tshark, which is a text based version of wireshark:
+```
+sudo apt-get install tshark
+```
+
+To set up the monitor interface after the driver has been successfully loaded you can use the following script:
+```
+sudo ./monitor_interface.sh
+```
+
+Now start wireshark on your host computer with the following command:
+```
+ssh pi@137.226.200.211 'tshark -i monitor0 -F pcap -w -' | wireshark -k -i -
+```
+
+This will start tshark on the Raspberry Pi via SSH. The output of tshark is redirected to the host computer using a pipe and serves as input for wireshark.
+
 ## List of manual commands
 In the following there are some commands listed, that can be used instead of the automatic configuration script.
 
