@@ -1,5 +1,6 @@
-/* this is a mixture from at86rf230.c and scull-main
- * all references to at86rf230 are changed to lprf
+/* This is a SPI device driver for a low power transceiver chip developed at
+ * the IAS, RWTH Aachen to support the IEEE 802.15.4 standard. The code design
+ * is oriented at the driver for the AT86RF230 chip from Atmel.
  * IAS LPRF driver
  *
  * Copyright (C) 2015 IAS RWTH Aachen
@@ -21,11 +22,6 @@
  * Tilman Sinning <tilman.sinning@rwth-aachen.de>
  * Moritz Schrey <mschrey@ias.rwth-aachen.de>
  * Jan Richter-Brockmann <jan.richter-brockmann@rwth-aachen.de>
- * Dmitry Eremin-Solenikov <dbaryshkov@gmail.com>
- * Alexander Smirnov <alex.bluesman.smirnov@gmail.com>
- * Alexander Aring <aar@pengutronix.de>
- * Alessandro Rubini
- * Jonathan Corbet
  */
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -63,15 +59,29 @@ static const int PHY_HEADER_LENGTH = 1;
  *      ___) || |_ | |   | |_| || (__ | |_ \__ \
  *     |____/  \__||_|    \__,_| \___| \__||___/
  *
+ * This Section contains some struct declarations that are needed
+ * for the driver.
  */
 
-/*
- * lprf_phy_status is used for the async spi tranfer to get status
- * information of the chip in lprf_phy_status_async().
+/**
+ * lprf_phy_status is needed for getting asynchronous phy_status
+ * information from the chip.
  *
  * @spi_device: spi device to use
- * @spi_message: spi_message for the spi transfer
- * @buf: buffer for the spi transfer
+ * @spi_message: spi_message for async spi transfer
+ * @rx_buf: rx buffer for spi communication
+ * @tx_buf: tx buffer for spi communication
+ * @is_active: variable used for synchronization to avoid starting a status
+ * 	read before the last status read finished. That could lead to data
+ * 	corruption since the same spi messages and buffers would be used.
+ *
+ * The LPRF Chip supports to get physical status information by reading
+ * just one byte from the SPI interface. Therefore getting the status
+ * informations is different from a normal register access. To avoid
+ * mixing up register access and phy_status information with potential
+ * issues due to bad synchronization and data reuse this struct is designated
+ * especially to reading phy_status information.
+ * Also have a look at lprf_phy_status_async().
  */
 struct lprf_phy_status {
         struct spi_device *spi_device;
@@ -80,12 +90,29 @@ struct lprf_phy_status {
         uint8_t rx_buf[1];
         uint8_t tx_buf[1];
         atomic_t is_active;
-        void (*complete)(void *context);
 };
 
-/*
- * @ in_progress: is true if a state change or rx_poll is currently
- * 	in progress.
+/**
+ * lprf_state_change is a struct used for asynchronous state changes.
+ *
+ * @lprf: Pointer to lprf_local struct
+ * @spi_device: spi device to use for spi transfers
+ * @spi_message: spi_message to use for spi transfers
+ * @rx_buf: rx buffer for spi communication related to state changes
+ * @tx_buf: tx buffer for spi communication related to state changes
+ * @to_state: state to change to
+ * @transistion_in_progress: variable used for synchronization to make sure
+ * 	to complete one state change before initiating another state change
+ * @tx_complete: Used to detect when transmitting data finished and
+ * 	ieee802154_xmit_complete() can be called.
+ * @sm_main_value: Cached value of the SM_MAIN register to enable writing
+ * 	 to sub registers without reading the register first.
+ * @dem_main_value: Cached value of the DEM_MAIN register to enable writing
+ * 	 to sub registers without reading the register first.
+ *
+ * This struct contains data specifically needed for state changes.
+ * This includes particularly SPI data like rx and tx buffers as well as
+ * synchronization specific data.
  */
 struct lprf_state_change {
 	struct lprf_local *lprf;
@@ -103,7 +130,27 @@ struct lprf_state_change {
         uint8_t dem_main_value;
 };
 
-
+/**
+ * lprf_local contains general information about the lprf chip.
+ *
+ * @spi_device: pointer to the spi device the chip is registered to.
+ * @regmap: pointer to the regmap structure needed for synchronous
+ * 	register access
+ * @my_char_dev: char device for the char driver interface.
+ * @rx_polling_timer: timer used for polling the chip, as the chip does not
+ * 	support an interrupt pin.
+ * @hw: ieee802154_hw the chip is registered to.
+ * @rx_polling_active: used for disabling the chip polling
+ * @phy_status: phy_status struct (see above)
+ * @state_change: state_change struct (see above)
+ * @tx_skb: Socket buffer containing pending TX data
+ * @free_skb: True if tx_skb got allocated by char driver interface and
+ * 	needs to be deleted after transmission.
+ *
+ * This struct exists once per chip and gets allocated in the probe function
+ * that handles all the hardware initialization. It contains all relevant
+ * information for the lprf chip.
+ */
 struct lprf_local {
 	struct spi_device *spi_device;
 	struct regmap *regmap;
@@ -116,9 +163,27 @@ struct lprf_local {
 	struct lprf_state_change state_change;
 
 	struct sk_buff *tx_skb;
-	bool skb_from_char_driver;
+	bool free_skb;
 };
 
+/**
+ * lprf_char_driver_interface is a struct used for the implementation of
+ * the char driver interface
+ *
+ * @is_open: true if the device file is currently opened by as user space
+ * 	application.
+ * @is_ready: true if is_open and all char driver initializations completed
+ * @data_buffer: buffer containing rx data for the char driver interface
+ * @wait_for_rx_data: wait queue to wait for rx data to become available
+ * @wait_for_tx_ready: wait queue to wait for the chip to get ready for
+ * 	tx mode.
+ *
+ * This struct contains data needed for the char driver interface. The char
+ * driver interface is actually not needed for normal chip operation but
+ * only used for debugging purposes. This way user space applications are able
+ * to read and write raw data to the chip without using the hole IEEE 802.15.4
+ * stack.
+ */
 struct lprf_char_driver_interface {
 	atomic_t is_open;
 	atomic_t is_ready;
@@ -136,8 +201,23 @@ struct lprf_char_driver_interface {
  *      ___) ||  __/ | |   / ___ \| (__| (__|  __/\__ \\__ \
  *     |____/ |_|   |___| /_/   \_\\___|\___|\___||___/|___/
  *
+ * The following sections contains functions to access the ship via SPI.
+ * This includes reading from and writing to registers as well as frame
+ * read/write access and status information. Synchronous SPI access is handled
+ * by the regmap functionality of the linux kernel. Asynchronous SPI access
+ * is directly handled by asynchronous spi transfers.
  */
 
+/**
+ * __lprf_write writes one register synchronously.
+ *
+ * @lprf: lprf_local struct
+ * @address: 8 bit address of the register
+ * @value: new value of the register
+ *
+ * Typically lprf_write_subreg() is used instead of calling this function
+ * directly. Internally the regmap functionality is used.
+ */
 static inline int
 __lprf_write(struct lprf_local *lprf, unsigned int address, unsigned int value)
 {
@@ -146,6 +226,16 @@ __lprf_write(struct lprf_local *lprf, unsigned int address, unsigned int value)
 	return ret;
 }
 
+/**
+ * __lprf_read reads value of one register synchronously.
+ *
+ * @lprf: lprf_locae struct
+ * @address: 8 bit register address to read from
+ * @value: variable to store the read value in
+ *
+ * Typically lprf_read_subreg() is used instead of directly calling this
+ * function. Internally regmap is used for the register access.
+ */
 static inline int
 __lprf_read(struct lprf_local *lprf, unsigned int address, unsigned int *value)
 {
@@ -154,8 +244,15 @@ __lprf_read(struct lprf_local *lprf, unsigned int address, unsigned int *value)
 	return ret;
 }
 
-
-
+/**
+ * lprf_read_subreg reads the value of a subregister synchronously
+ *
+ * @lprf: lprf_local struct
+ * @addr: address of the register to read from
+ * @mask: mask for the sub register to read from
+ * @shift: shift needed to align data with LSB
+ * @data: variable to store value in
+ */
 static inline int lprf_read_subreg(struct lprf_local *lprf,
 		unsigned int addr, unsigned int mask,
 		unsigned int shift, unsigned int *data)
@@ -166,7 +263,15 @@ static inline int lprf_read_subreg(struct lprf_local *lprf,
 	return ret;
 }
 
-
+/**
+ * lprf_write_subreg writes a value to a subregister synchronously
+ *
+ * @lprf: lprf_local struct
+ * @addr: address of the register to read from
+ * @mask: mask for the sub register to read from
+ * @shift: shift needed to align data with LSB
+ * @data: value to write to subregister
+ */
 static inline int lprf_write_subreg(struct lprf_local *lprf,
 		unsigned int addr, unsigned int mask,
 		unsigned int shift, unsigned int data)
@@ -174,7 +279,10 @@ static inline int lprf_write_subreg(struct lprf_local *lprf,
 	return regmap_update_bits(lprf->regmap, addr, mask, data << shift);
 }
 
-
+/**
+ * lprf_read_phy_status reads phy_status synchronously by using
+ * the spi_read function.
+ */
 static inline int lprf_read_phy_status(struct lprf_local *lprf)
 {
 	uint8_t rx_buf[] = {0};
@@ -188,6 +296,10 @@ static inline int lprf_read_phy_status(struct lprf_local *lprf)
 
 }
 
+/**
+ * returns true if the given register is writable. Needed for the regmap
+ * caching functionality.
+ */
 static bool lprf_reg_writeable(struct device *dev, unsigned int reg)
 {
 	if(((reg >= 0) && (reg < 53)) ||
@@ -199,6 +311,10 @@ static bool lprf_reg_writeable(struct device *dev, unsigned int reg)
 		return false;
 }
 
+/**
+ * returns true if the given register is read only. Needed for the regmap
+ * caching functionality.
+ */
 static bool lprf_is_read_only_reg(unsigned int reg)
 {
 	switch (reg) {
@@ -232,6 +348,10 @@ static bool lprf_is_read_only_reg(unsigned int reg)
 	}
 }
 
+/**
+ * returns true if the given register is readable. Needed for the regmap
+ * caching functionality.
+ */
 static bool lprf_reg_readable(struct device *dev, unsigned int reg)
 {
 
@@ -239,6 +359,10 @@ static bool lprf_reg_readable(struct device *dev, unsigned int reg)
 			lprf_is_read_only_reg(reg);
 }
 
+/**
+ * returns true if the given register is volatile and therefore can not be
+ * cached.
+ */
 static bool lprf_reg_volatile(struct device *dev, unsigned int reg)
 {
 	/* All Read Only Registers are volatile */
@@ -255,12 +379,21 @@ static bool lprf_reg_volatile(struct device *dev, unsigned int reg)
 	}
 }
 
+/**
+ * returns true if the given register is precious and reading that register
+ * has side effects (like a clear-on-read flag). The lprf chip has no
+ * precious registers.
+ */
 static bool lprf_reg_precious(struct device *dev, unsigned int reg)
 {
 	/* The LPRF-Chip has no precious register */
 	return false;
 }
 
+/**
+ * Configuration struct for the regmap functionality. The commands for
+ * read and write access are specified here.
+ */
 static const struct regmap_config lprf_regmap_spi_config = {
 	.reg_bits = 16,
 	.reg_stride = 1,
@@ -269,7 +402,8 @@ static const struct regmap_config lprf_regmap_spi_config = {
 	.read_flag_mask = 0x80,
 	.write_flag_mask = 0xc0,
 	.fast_io = 0, /* use spinlock instead of mutex for locking */
-	.max_register = 0xF3, /* we do not support bulk read write */
+	.max_register = 0xF3,
+	.use_single_rw = 1, /* we do not support bulk read write */
 	.can_multi_write = 0,
 	.cache_type = REGCACHE_RBTREE,
 	.writeable_reg = lprf_reg_writeable,
@@ -284,6 +418,9 @@ static void lprf_async_write_register(struct lprf_state_change *state_change,
 static int lprf_phy_status_async(struct lprf_phy_status *phy_status);
 static inline void lprf_stop_polling(struct lprf_local *lprf);
 
+/**
+ * Call back for asynchronous error recovery. See lprf_async_error().
+ */
 static void lprf_async_error_recover_callback(void *context)
 {
 	struct lprf_local *lprf = context;
@@ -291,6 +428,9 @@ static void lprf_async_error_recover_callback(void *context)
 	lprf_phy_status_async(&lprf->phy_status);
 }
 
+/**
+ * Call back for asynchronous error recovery. See lprf_async_error().
+ */
 static void lprf_async_error_recover(void *context)
 {
 	struct lprf_local *lprf = context;
@@ -300,6 +440,18 @@ static void lprf_async_error_recover(void *context)
 			lprf_async_error_recover_callback);
 }
 
+/**
+ * Resets the chip after an async error has been received.
+ *
+ * @lprf: lprf_local struct
+ * @lprf_state_change: state change struct for the current state change
+ * @rc: error code returned by spi_async
+ *
+ * If spi async returns with an error this function can be used to reset
+ * the chip asynchronously and get the chip into normal operation again.
+ * Normally there should be no async spi error, so this function will
+ * normally not be used at all.
+ */
 static inline void lprf_async_error(struct lprf_local *lprf,
 		struct lprf_state_change *state_change, int rc)
 {
@@ -309,6 +461,22 @@ static inline void lprf_async_error(struct lprf_local *lprf,
 			RG_GLOBAL_RESETB, 0, lprf_async_error_recover);
 }
 
+/**
+ * writes the value of one register asynchronously
+ *
+ * @state_change: current state change struct
+ * @address: 8 bit register address to write the value to
+ * @value: value to write to the register
+ * @complete: completion callback to call after register access completed.
+ * 	Note that the callback function will be called in interrupt context
+ * 	as it is directly the callback function of spi_async().
+ *
+ * Transmitting data and changing the states of the chip needs to be done
+ * asynchronously. However, the regmap functionality provides no way to
+ * access registers asynchronously with using callback functions at the same
+ * time. Therefore an asynchronous way of setting registers is needed. This
+ * is done by directly calling spi_async(). See also lprf_async_write_subreg().
+ */
 static void lprf_async_write_register(struct lprf_state_change *state_change,
 		uint8_t address, uint8_t value,
 		void (*complete)(void *context))
@@ -325,6 +493,30 @@ static void lprf_async_write_register(struct lprf_state_change *state_change,
 		lprf_async_error(state_change->lprf, state_change, ret);
 }
 
+/**
+ * Writes a sub register asynchronously
+ *
+ * @lprf_state_change: current state change struct
+ * @cached value: cached value of the hole register
+ * @addr: 8 bit address of the register to write to
+ * @mask: sub register mask
+ * @shift: shift needed to align sub register with LSB
+ * @data: data to write to sub register
+ * @complete: completion callback to call after register access completed.
+ * 	Note that the callback function will be called in interrupt context
+ * 	as it is directly the callback function of spi_async().
+ *
+ * The use of spi_async instead of regmap for asynchronous register access
+ * has the disadvantage that no automatic caching of register data is performed.
+ * To avoid reading the register every time a cached value of the register
+ * needs to be provided. Typically it should be enough to save the
+ * configuration value once after the initial configuration in the probe
+ * function.
+ * The AR86RF230 needs to access sub registers only during the initial
+ * configuration and not during regular operation. Therefore it does not have
+ * the problem of accessing sub registers asynchronously and needing to
+ * cache those register values manually.
+ */
 static void
 lprf_async_write_subreg(struct lprf_state_change *state_change,
 		uint8_t cached_val, uint8_t addr, uint8_t mask, uint8_t shift,
@@ -347,6 +539,20 @@ static void lprf_phy_status_complete(void *context)
 	lprf_evaluate_phy_status(lprf, state_change, status);
 }
 
+/**
+ * reads the physical status of the chip
+ *
+ * @phy_status: lprf_phy_status struct
+ *
+ * every action like performing a state change or reading data from the chip
+ * depends on the physical status of the chip. This functions reads the
+ * physical status asynchronously and determines the action to do in the
+ * callback. As the lprf chip does not support interrupt pins this function
+ * is typically called from within a polling timer callback. It can also be
+ * called due to other events like available TX data. As the action to do
+ * is completely determined by the physical status of the chip no explicit
+ * callback function is needed here.
+ */
 static int lprf_phy_status_async(struct lprf_phy_status *phy_status)
 {
 	int ret = 0;
@@ -373,16 +579,23 @@ static int lprf_phy_status_async(struct lprf_phy_status *phy_status)
  *     | |___| (_| || || (__ | |_| || || (_| || |_ | || (_) || | | |\__ \
  *      \____|\__,_||_| \___| \__,_||_| \__,_| \__||_| \___/ |_| |_||___/
  *
+ * This section contains functions with calculations specific for the lprf
+ * chip like PLL divisor values or VCO tune values. They are mostly more
+ * workarounds for functionality that industry chips like the AT86RF230
+ * would typically implement on chip, but are not natively supported by
+ * the lprf chip.
  */
 
 /**
- * Calculates the RX Length counter based on the datarate and frame_length
+ * Calculates the RX Length counter based on the data rate and frame_length
  * (assuming 32MHz clock speed on chip)
  *
- * @kbitrate: over the air daterate in kb/s
- * @frame_length: frame length in bytes
+ * @kbitrate: over the air data rate in kb/s
+ * @frame_length: maximum frame length in bytes. This is the number of bytes
+ * 	that will be received by the chip for every RX frame independent
+ * 	of the actual length of the specific frame.
  */
-static inline int get_rx_length_counter_H(int kbit_rate, int frame_length)
+static inline int get_rx_length_counter(int kbit_rate, int frame_length)
 {
 	const int chip_speed_kHz = 32000;
 	return 8 * frame_length * chip_speed_kHz / kbit_rate +
@@ -390,7 +603,9 @@ static inline int get_rx_length_counter_H(int kbit_rate, int frame_length)
 }
 
 /**
- * Reverses the bit order of byte
+ * Reverses the bit order of one byte. This is needed because the lprf chip
+ * send rx data with inversed bit order compared to the over-the-air bit
+ * order
  */
 static inline void reverse_bit_order(uint8_t *byte)
 {
@@ -489,16 +704,40 @@ static int lprf_calculate_pll_values(uint32_t rf_frequency,
  *      ___) || |_| (_| || |_|  __/\__ \
  *     |____/  \__|\__,_| \__|\___||___/
  *
+ * The following sections contains all function related to state changes and
+ * data receiving/sending.
+ *
+ * As the lprf chip does not support interrupt pins the status of the chip
+ * has to be determined regularly by polling. This is done in lprf_start_poll().
+ * Before every action like changing a state, receiving or sending data the
+ * physical status of the chip will be asked lprf_phy_status_async().
+ * In lprf_evaluate_phy_status() the action to be performed will be determined
+ * and initiated.
  */
 
+/**
+ * starts the timer to poll the status of the chip after the specified time
+ * interval has passed.
+ *
+ * @lprf: lprf_local struct
+ * @interval: time interval for the polling timer
+ *
+ * This function will start a timer. After the given interval lprf_start_poll()
+ * will be called. The timer will only be started if lprf.rx_polling_active
+ * is true.
+ */
 static inline void lprf_start_polling_timer(struct lprf_local *lprf,
-		ktime_t first_interval)
+		ktime_t interval)
 {
 	if (atomic_read(&lprf->rx_polling_active))
-		hrtimer_start(&lprf->rx_polling_timer, first_interval,
+		hrtimer_start(&lprf->rx_polling_timer, interval,
 				HRTIMER_MODE_REL);
 }
 
+/**
+ * sets lprf.rx_polling_active to false to avoid any atimer restarts and
+ * cancels any running timer.
+ */
 static inline void lprf_stop_polling(struct lprf_local *lprf)
 {
 	atomic_set(&lprf->rx_polling_active, 0);
@@ -506,6 +745,13 @@ static inline void lprf_stop_polling(struct lprf_local *lprf)
 	PRINT_KRIT("RX Data Polling stopped.");
 }
 
+/**
+ * Starts the polling of physical status information by executing
+ * lprf_phy_status_async(). This function is typically called as a timer
+ * callback in interrupt context. In future chip versions that support
+ * interrupt pins this function can be called directly from the chip
+ * interrupt.
+ */
 static enum hrtimer_restart lprf_start_poll(struct hrtimer *timer)
 {
 	int rc = 0;
@@ -518,20 +764,33 @@ static enum hrtimer_restart lprf_start_poll(struct hrtimer *timer)
 	return HRTIMER_NORESTART;
 }
 
+/**
+ * Calls ieee802154_xmit_complete() to signal the IEEE 802.15.4 stack that
+ * the data transmission completed successfully and the chip is ready for
+ * new data. This function needs to be called, after the chip completed
+ * transmitting data and changed back to sleep mode or rx mode.
+ */
 static void lprf_tx_complete(struct lprf_local *lprf)
 {
 	struct sk_buff *skb_temp = lprf->tx_skb;
 	lprf->tx_skb = 0;
-	if (lprf->skb_from_char_driver)
+	if (lprf->free_skb)
 		kfree_skb(skb_temp);
 	else
 		ieee802154_xmit_complete(lprf->hw, skb_temp, false);
-	lprf->skb_from_char_driver = false;
+	lprf->free_skb = false;
 	lprf->state_change.tx_complete = false;
 	wake_up(&lprf_char_driver_interface.wait_for_tx_ready);
 	PRINT_KRIT("TX data send successfully");
 }
 
+/**
+ * Is called after the transition to TX mode completed successfully. Note
+ * that the chip is still in TX mode and busy sending data when this
+ * function is called. The complete transmission of data is only finished
+ * when the chip has changed back to sleep mode or rx mode and
+ * lprf_tx_complete() is called.
+ */
 static void lprf_tx_change_complete(void *context)
 {
 	struct lprf_local *lprf = context;
@@ -543,7 +802,10 @@ static void lprf_tx_change_complete(void *context)
 	lprf_start_polling_timer(lprf, TX_RX_INTERVAL);
 }
 
-
+/**
+ * Callback of the frame write function. Initiates the state change to
+ * TX mode.
+ */
 static void __lprf_frame_write_complete(void *context)
 {
 	struct lprf_local *lprf = context;
@@ -557,6 +819,10 @@ static void __lprf_frame_write_complete(void *context)
 	PRINT_KRIT("Change state to TX");
 }
 
+/**
+ * Starts a frame write via SPI. The Chip should be in sleep mode and otherwise
+ * ready for sending data (see lprf_resets()).
+ */
 static int lprf_start_frame_write(struct lprf_local *lprf)
 {
 	int ret = 0;
@@ -598,6 +864,10 @@ static int lprf_start_frame_write(struct lprf_local *lprf)
 	return 0;
 }
 
+/**
+ * callback function of CMD_RX command. Called after the chip successfully
+ * changed to RX mode.
+ */
 void lprf_rx_change_complete(void *context)
 {
 	struct lprf_local *lprf = context;
@@ -610,7 +880,8 @@ void lprf_rx_change_complete(void *context)
 
 /**
  * Compares number_of_bits bits starting from the LSB and returns
- * the number of equal bits.
+ * the number of equal bits. This is needed to find the start of frame
+ * delimiter of received data.
  */
 static inline int number_of_equal_bits(uint32_t x1, uint32_t x2,
 		int number_of_bits)
@@ -628,6 +899,7 @@ static inline int number_of_equal_bits(uint32_t x1, uint32_t x2,
 
 /**
  * Calculates the data shift from the start of frame delimiter
+ *
  * @data: rx_data received from chip. Bit order and polarity needs to be
  * 	already corrected
  * @data_length: number of bytes in data.
@@ -641,8 +913,8 @@ static inline int number_of_equal_bits(uint32_t x1, uint32_t x2,
  * Returns the shift value (6/7/8) or zero if sfd was not found.
  *
  * The lprf chip has a hardware preamble detection. However, the hardware
- * preamble detection is limited to 8 bit (or optionally 5 bit). In the
- * IEEE 802.15.4 standard the preambles typically have a length of 4 byte.
+ * preamble detection is limited to a 8 bit preamble (or optionally 5 bit). In
+ * the IEEE 802.15.4 standard the preamble has a length of 4 byte.
  * Additionally the data from the chip is sometimes misaligned by one bit.
  * Therefore the additional preamble bits have to be removed and the
  * misalignment has to be adjusted in software.
@@ -688,6 +960,10 @@ static int find_SFD_and_shift_data(uint8_t *data, int *data_length,
 	return shift;
 }
 
+/**
+ * Processes the raw data received from the chip and delegates the corrected
+ * data to the IEEE 802.15.4 network stack.
+ */
 static int lprf_receive_ieee802154_data(struct lprf_local *lprf,
 		uint8_t *buffer, int buffer_length)
 {
@@ -695,8 +971,6 @@ static int lprf_receive_ieee802154_data(struct lprf_local *lprf,
 	struct sk_buff *skb;
 	int ret = 0;
 	int lqi = 0;
-
-
 
 	if (find_SFD_and_shift_data(buffer, &buffer_length, 0xe5, 4) == 0) {
 		PRINT_KRIT("SFD not found, ignoring frame");
@@ -729,6 +1003,9 @@ static int lprf_receive_ieee802154_data(struct lprf_local *lprf,
 	return ret;
 }
 
+/**
+ * Reverses the bit order and inverts all bits in the data buffer.
+ */
 static void preprocess_received_data(uint8_t *data, int length)
 {
 	int i = 0;
@@ -738,6 +1015,10 @@ static void preprocess_received_data(uint8_t *data, int length)
 	}
 }
 
+/**
+ * Writes the received raw data to the char driver buffer, if a user space
+ * application has actually opened the device file and is waiting for data.
+ */
 static void write_data_to_char_driver(uint8_t *data, int length)
 {
 	if (!atomic_read(&lprf_char_driver_interface.is_ready))
@@ -746,6 +1027,11 @@ static void write_data_to_char_driver(uint8_t *data, int length)
 	kfifo_in(&lprf_char_driver_interface.data_buffer, data, length);
 }
 
+/**
+ * Completion callback of the frame read command. Processes the received data
+ * by calling lprf_receive_ieee802154_data(). The physical status information
+ * will be polled from the chip, after the data was received successfully.
+ */
 static void __lprf_read_frame_complete(void *context)
 {
 	uint8_t *data_buf = 0;
@@ -774,7 +1060,11 @@ static void __lprf_read_frame_complete(void *context)
 
 }
 
-
+/**
+ * Starts reading RX data from the chip. The chip should actually have data
+ * available and be in sleep mode that no new data is received during the
+ * read process.
+ */
 static void read_lprf_fifo(struct lprf_local *lprf)
 {
 	int ret = 0;
@@ -794,11 +1084,15 @@ static void read_lprf_fifo(struct lprf_local *lprf)
 }
 
 /*
- * Unfortunately the digital part of the LPRF-chip has some issues.
- * The internal statemaschine does not reset some internal parts
- * correctly after changing from RX-mode to another mode. Therefore
- * before every statechange some manual resets have to be done to
- * avoid data corruption.
+ * Resets some parts of the lprf chip
+ *
+ * @context: lprf_local struct containing the chip information
+ *
+ * After receiving RX data the internal statemachine of the lprf chip
+ * does not reset all parts of the chip correctly. To avoid data
+ * corruption and ensure a correct function of the chip some of those
+ * resets need to be handled manually. This needs to be done every time
+ * before the chip changes to RX mode or to TX mode.
  */
 static void lprf_rx_resets(void *context)
 {
@@ -854,6 +1148,12 @@ static void lprf_rx_resets(void *context)
 	}
 }
 
+/**
+ * Initiates a asynchronous state change
+ *
+ * @lprf: lprf_local struct containing chip information
+ * @state: new state to change to
+ */
 static void lprf_async_state_change(struct lprf_local *lprf, uint8_t state)
 {
 	struct lprf_state_change *state_change = &lprf->state_change;
@@ -876,6 +1176,22 @@ static void lprf_async_state_change(struct lprf_local *lprf, uint8_t state)
 	}
 }
 
+/**
+ * Decides what action needs to be done dependent on the physical status of
+ * the chip.
+ *
+ * @lprf: lprf_local struct containing chip information
+ * @state_change: lprf_state_change struct
+ * @phy_status: current physical status received from chip
+ *
+ * This is the main function for all state changes and other actions to be
+ * performed. It gets the current physical status of the chip as an input
+ * and decides what action will be performed. If the chip is busy or a
+ * state transition is currently in progress this
+ * function will do nothing. If the chip has RX data available an RX read
+ * will be started. If there is pending TX data the chip will change to TX
+ * mode.
+ */
 static void lprf_evaluate_phy_status(struct lprf_local *lprf,
 		struct lprf_state_change *state_change, uint8_t phy_status)
 {
@@ -928,8 +1244,13 @@ static void lprf_evaluate_phy_status(struct lprf_local *lprf,
  *     | |___| (_| || || || |_) || (_| || (__ |   < \__ \
  *      \____|\__,_||_||_||_.__/  \__,_| \___||_|\_\|___/
  *
+ * This section implements the callbacks of the IEEE 802.15.4 network statck.
  */
 
+/**
+ * Called when the WPAN device is activated from user space. Starts the
+ * polling of the chip.
+ */
 static int lprf_start_ieee802154(struct ieee802154_hw *hw)
 {
 	struct lprf_local *lprf = hw->priv;
@@ -942,6 +1263,10 @@ static int lprf_start_ieee802154(struct ieee802154_hw *hw)
 	return 0;
 }
 
+/**
+ * Called when the WPAN device gets deactivated from user space. Stops the
+ * polling and changes to sleep mode.
+ */
 static void lprf_stop_ieee802154(struct ieee802154_hw *hw)
 {
 	struct lprf_local *lprf = hw->priv;
@@ -960,6 +1285,9 @@ static void lprf_stop_ieee802154(struct ieee802154_hw *hw)
 	lprf_write_subreg(lprf, SR_SM_RESETB,   1);
 }
 
+/**
+ * callback for setting the RF channel. Sets the PLL values of the chip.
+ */
 static int
 lprf_set_ieee802154_channel(struct ieee802154_hw *hw,u8 page, u8 channel)
 {
@@ -1017,6 +1345,13 @@ static const s32 lprf_tx_powers[] = {
 		1000, 1100, 1200, 1300, 1400, 1500
 };
 
+/**
+ * Callback for setting the output power of the chip. Adjusts the
+ * SR_TX_PWR_CTRL register. Note that the TX characteristics for the
+ * settings used in this driver are not determined correctly. So the
+ * output power will actually be the value set from user space. A higher
+ * value will result in a higher output power.
+ */
 static int lprf_set_tx_power(struct ieee802154_hw *hw, s32 power)
 {
 	int i;
@@ -1032,6 +1367,10 @@ static int lprf_set_tx_power(struct ieee802154_hw *hw, s32 power)
 	return -EINVAL;
 }
 
+/**
+ * Callback for available TX data. Initiates a phy_status poll get the
+ * chip in TX mode and send the available data.
+ */
 static int
 lprf_xmit_ieee802154_async(struct ieee802154_hw *hw, struct sk_buff *skb)
 {
@@ -1053,6 +1392,13 @@ lprf_xmit_ieee802154_async(struct ieee802154_hw *hw, struct sk_buff *skb)
 	return 0;
 }
 
+/**
+ * IEEE 802.15.4 uses CSMA-CA algorithms for channel access. Therefore
+ * compatible chips need to be able to determine if the channel is currently
+ * in use. The LPRF-chip does not support energy detection yet. As this
+ * function needs to be implemented for the network stack to work, this
+ * provides a dummy implementation for energy detection.
+ */
 static int lprf_ieee802154_energy_detection(struct ieee802154_hw *hw, u8 *level)
 {
 	PRINT_DEBUG("Called unsupported function "
@@ -1060,6 +1406,14 @@ static int lprf_ieee802154_energy_detection(struct ieee802154_hw *hw, u8 *level)
 	return 0;
 }
 
+/**
+ * For the monitor interface to work the chip needs to support promiscuous
+ * mode. This means that the chip only works in a kind of monitoring mode
+ * with some IEEE specific features like address filtering turned off. As
+ * our chip does not support any specific IEEE features on chip it basically
+ * always works in promiscuous mode. Therefore this functions does not need
+ * to do any specific communication with the chip.
+ */
 static int
 lprf_set_promiscuous_mode(struct ieee802154_hw *hw, const bool on)
 {
@@ -1093,6 +1447,9 @@ static const struct ieee802154_ops  ieee802154_lprf_callbacks = {
  *     | |___ | | | || (_| || |    | (_| || |   | | \ V /|  __/| |
  *      \____||_| |_| \__,_||_|     \__,_||_|   |_|  \_/  \___||_|
  *
+ * This sections contains all functions related to the char driver interface.
+ * This is only used as a debug interface and therefore not needed for a
+ * proper IEEE 802.15.4 function.
  */
 
 int lprf_open_char_device(struct inode *inode, struct file *filp)
@@ -1197,7 +1554,7 @@ ssize_t lprf_write_char_device(struct file *filp, const char __user *buf,
 
 	skb->len = bytes_copied;
 	lprf->tx_skb = skb;
-	lprf->skb_from_char_driver = true;
+	lprf->free_skb = true;
 
 	PRINT_KRIT("Call state change from write char device");
 
@@ -1267,14 +1624,20 @@ static inline void unregister_char_device(struct lprf_local *lprf)
  *      | | | | | || || |_ \__ \
  *     |___||_| |_||_| \__||___/
  *
+ * This section contains all kinds of initializations only during module
+ * loading. The starting point of this module is the lprf_probe()
+ * function, which calls all other initialization functions.
  */
 
+/**
+ * initializes the lprf chip with the default configuration.
+ */
 static int init_lprf_hardware(struct lprf_local *lprf)
 {
 	int ret = 0;
 	unsigned int value = 0;
 	int rx_counter_length =
-			get_rx_length_counter_H(KBIT_RATE, FRAME_LENGTH);
+			get_rx_length_counter(KBIT_RATE, FRAME_LENGTH);
 
 	/* Reset all and load initial values */
 	RETURN_ON_ERROR(__lprf_write(lprf, RG_GLOBAL_RESETB,  0x00));
@@ -1431,11 +1794,10 @@ static int init_lprf_hardware(struct lprf_local *lprf)
 }
 
 /**
- * Detect LPRF Chip
+ * Reads the chip ID and sets the IEEE device capabilities
+ * for this chip.
  *
- * @lprf: lprf struct containing hardware information of lprf chip
- *
- * returns 0 on success, a negative error number on error.
+ * Returns zero or a negative error code.
  */
 static int lprf_detect_device(struct lprf_local *lprf)
 {
@@ -1480,6 +1842,9 @@ static int lprf_detect_device(struct lprf_local *lprf)
 
 }
 
+/**
+ * Initializes the lprf_local struct
+ */
 static void init_lprf_local(struct lprf_local *lprf, struct spi_device *spi)
 {
 	hrtimer_init(&lprf->rx_polling_timer, CLOCK_MONOTONIC,
@@ -1490,6 +1855,9 @@ static void init_lprf_local(struct lprf_local *lprf, struct spi_device *spi)
 	spi_set_drvdata(spi, lprf);
 }
 
+/**
+ * Initializes the lprf_state_change struct
+ */
 static void init_state_change(struct lprf_state_change *state_change,
 		struct lprf_local *lprf, struct spi_device *spi)
 {
@@ -1504,6 +1872,9 @@ static void init_state_change(struct lprf_state_change *state_change,
 			&state_change->spi_message);
 }
 
+/**
+ * Initializes the lprf_phy_status struct
+ */
 static void init_phy_status(struct lprf_phy_status *phy_status,
 		struct lprf_local *lprf, struct spi_device *spi)
 {
@@ -1518,12 +1889,18 @@ static void init_phy_status(struct lprf_phy_status *phy_status,
 			&phy_status->spi_message);
 }
 
+/**
+ * Initializes the char_driver struct
+ */
 static void init_char_driver(void)
 {
 	init_waitqueue_head(&lprf_char_driver_interface.wait_for_rx_data);
 	init_waitqueue_head(&lprf_char_driver_interface.wait_for_tx_ready);
 }
 
+/**
+ * Starting point of the kernel module. Sets everything up correctly.
+ */
 static int lprf_probe(struct spi_device *spi)
 {
 	int ret = 0;
@@ -1587,6 +1964,9 @@ free_lprf:
 	return ret;
 }
 
+/**
+ * Called when the module is unloaded. Frees storage and cleans up everything.
+ */
 static int lprf_remove(struct spi_device *spi)
 {
 	struct lprf_local *lprf = spi_get_drvdata(spi);
