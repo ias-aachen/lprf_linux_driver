@@ -1197,32 +1197,45 @@ static void lprf_evaluate_phy_status(struct lprf_local *lprf,
 {
 	PRINT_KRIT("Phy_status in lprf_evaluate_phy_status 0x%X", phy_status);
 
+	/* try lock following section. If already locked: return. */
 	if (atomic_inc_return(&state_change->transition_in_progress) != 1) {
 		atomic_dec(&state_change->transition_in_progress);
 		PRINT_KRIT("transition in progress... abort");
 		return;
 	}
 
+	/*
+	 * Call ieee802154_xmit_complete() if tx transmission completed
+	 * successfully.
+	 */
 	if(PHY_SM_STATUS(phy_status) != PHY_SM_SENDING &&
 			state_change->tx_complete)
 		lprf_tx_complete(lprf);
 
+	/* Read data from chip, if RX data is available */
 	if(PHY_SM_STATUS(phy_status) == PHY_SM_SLEEP &&
 			!PHY_FIFO_EMPTY(phy_status)) {
 		read_lprf_fifo(lprf);
 		return;
 	}
+
+	/* Send TX data, if TX data is pending */
 	if (lprf->tx_skb && PHY_FIFO_EMPTY(phy_status)) {
 		lprf_async_state_change(lprf, STATE_CMD_TX);
 		return;
 	}
 
+	/*
+	 * Change to RX state again, if chip is in an idle state
+	 * (RX data transferred to driver, chip still in sleep mode)
+	 */
 	if(PHY_SM_STATUS(phy_status) == PHY_SM_SLEEP &&
 			PHY_FIFO_EMPTY(phy_status)) {
 		lprf_async_state_change(lprf, STATE_CMD_RX);
 		return;
 	}
 
+	/* unlock critical section */
 	atomic_dec(&state_change->transition_in_progress);
 
 	if(PHY_SM_STATUS(phy_status) == PHY_SM_RECEIVING) {
