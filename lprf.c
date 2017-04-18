@@ -671,7 +671,7 @@ static int lprf_calculate_pll_values(uint32_t rf_frequency,
 		int *int_val, int *frac_val)
 {
 	uint32_t f_lo = 0;
-	int frac_correction = 0;
+	int frac_correction = -0x20d2;
 
 	/*2.4 GHz Frontend*/
 	if (rf_frequency > 2000000000) {
@@ -1993,7 +1993,8 @@ static int lprf_probe(struct spi_device *spi)
 	init_char_driver();
 
 	hw->parent = &lprf->spi_device->dev;
-	ieee802154_random_extended_addr(&hw->phy->perm_extended_addr);
+	// ieee802154_random_extended_addr(&hw->phy->perm_extended_addr);
+	hw->phy->perm_extended_addr = 0xeaf4668361e07c01;
 
 	lprf->regmap = devm_regmap_init_spi(spi, &lprf_regmap_spi_config);
 	if (IS_ERR(lprf->regmap)) {
