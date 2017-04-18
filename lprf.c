@@ -918,7 +918,7 @@ static inline int number_of_equal_bits(uint32_t x1, uint32_t x2,
  * Therefore the additional preamble bits have to be removed and the
  * misalignment has to be adjusted in software.
  */
-static int find_SFD_and_shift_data(uint8_t *data, int *data_length,
+/*static int find_SFD_and_shift_data(uint8_t *data, int *data_length,
 		uint8_t sfd, int preamble_length)
 {
 	int i;
@@ -957,6 +957,54 @@ static int find_SFD_and_shift_data(uint8_t *data, int *data_length,
 	*data_length -= (sfd_start_postion + 1);
 
 	return shift;
+}*/
+
+static int find_SFD_and_shift_data(uint8_t *data, int *data_length,
+                uint8_t sfd, int preamble_length)
+{
+    int i = 0;
+    int bit_shift = 0;
+    int byte_shift = 0;
+    int max_bytes_to_search = 10;
+
+    uint16_t pattern_16bit = sfd << 8;
+    int sfd_found = 0;
+
+    /* Find SFD */
+
+    for( i = 0; i < max_bytes_to_search; ++i)
+    {
+        for(bit_shift = 0; bit_shift < 8; ++bit_shift)
+                {
+                        uint16_t temp = ((data[i] << 8) + data[i+1]);
+                        temp = temp << bit_shift;
+                        temp &= 0xFF00;
+                        if (pattern_16bit == temp)
+                        {
+                                sfd_found = 1;
+                                byte_shift = i;
+                                //printf("pattern found at byte [%d] with %d bit shift to left\n\n", byte_shift, bit_shift);
+                                break;
+                        }
+                }
+        if (sfd_found)
+            break;
+    }
+
+    if (!sfd_found)
+        return 0;
+
+    /* Shift data */
+    *data_length = *data_length - byte_shift - 2;
+
+    for( i = 0; i < *data_length; ++i)
+    {
+        uint16_t temp = ((data[i + byte_shift + 1] << 8) + data[i + byte_shift + 2]);
+        temp = temp >> (8 - bit_shift);
+        data[i] = (uint8_t) temp;
+    }
+
+    return 1; /* SUCCESS */
 }
 
 /**
@@ -1657,20 +1705,23 @@ static int init_lprf_hardware(struct lprf_local *lprf)
 	RETURN_ON_ERROR(__lprf_write(lprf, RG_GLOBAL_initALL, 0xFF));
 
 	/* Clock Reference */
+	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_IREF_CRY_CTRLB,   0));
 	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_CTRL_CLK_CDE_OSC, 0));
 	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_CTRL_CLK_CDE_PAD, 1));
-	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_CTRL_CLK_DIG_OSC, 0));
-	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_CTRL_CLK_DIG_PAD, 1));
-	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_CTRL_CLK_PLL_OSC, 0));
-	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_CTRL_CLK_PLL_PAD, 1));
+	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_CTRL_CLK_DIG_OSC, 1));
+	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_CTRL_CLK_DIG_PAD, 0));
+	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_CTRL_CLK_PLL_OSC, 1));
+	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_CTRL_CLK_PLL_PAD, 0));
 	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_CTRL_CLK_C3X_OSC, 0));
 	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_CTRL_CLK_C3X_PAD, 1));
+	msleep(50);  // Give internal oscillator time to start up
 	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_CTRL_CLK_FALLB,   0));
 
 	/* ADC_CLK */
-	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_CTRL_CDE_ENABLE, 0));
-	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_CTRL_C3X_ENABLE, 1));
-	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_CTRL_CLK_ADC,    1));
+	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_CTRL_CLK_IREF,   6));
+	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_CTRL_CDE_ENABLE, 1));
+	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_CTRL_C3X_ENABLE, 0));
+	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_CTRL_CLK_ADC,    0));
 	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_CTRL_C3X_LTUNE,  1));
 
 	/* LDOs */
@@ -1685,6 +1736,7 @@ static int init_lprf_hardware(struct lprf_local *lprf)
 	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_PLL_VCO_TUNE,   235));
 	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_PLL_LPF_C,        0));
 	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_PLL_LPF_R,        9));
+	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_PLL_BUFFER_EN,    1));
 
 	/* activate 2.4GHz Band */
 	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_RX_RF_MODE,     0));
@@ -1696,13 +1748,13 @@ static int init_lprf_hardware(struct lprf_local *lprf)
 	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_CTRL_ADC_MULTIBIT, 0));
 	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_CTRL_ADC_ENABLE,   1));
 	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_CTRL_ADC_BW_SEL,   1));
-	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_CTRL_ADC_BW_TUNE,  5));
-	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_CTRL_ADC_DR_SEL,   2));
+	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_CTRL_ADC_BW_TUNE,  4));
+	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_CTRL_ADC_DR_SEL,   0));
 
 	/* Polyphase Filter Setting */
 	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_PPF_M0,    0));
-	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_PPF_M1,    0));
-	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_PPF_TRIM,  0));
+	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_PPF_M1,    1));
+	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_PPF_TRIM,  4));
 	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_PPF_HGAIN, 1));
 	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_PPF_LLIF,  0));
 
@@ -1712,7 +1764,7 @@ static int init_lprf_hardware(struct lprf_local *lprf)
 	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_DEM_FREQ_OFFSET_CAL_EN, 0));
 	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_DEM_OSR_SEL,            0));
 	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_DEM_BTLE_MODE,          1));
-	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_DEM_IF_SEL,             2));
+	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_DEM_IF_SEL,             3));
 	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_DEM_DATA_RATE_SEL,      3));
 	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_DEM_IQ_CROSS,           1));
 	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_DEM_IQ_INV,             0));
@@ -1727,14 +1779,14 @@ static int init_lprf_hardware(struct lprf_local *lprf)
 	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_DEM_GC7, 4));
 
 	/* General TX Settings */
-	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_PLL_MOD_DATA_RATE,   3));
-	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_PLL_MOD_FREQ_DEV,   21));
+	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_PLL_MOD_DATA_RATE,   2));
+	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_PLL_MOD_FREQ_DEV,   10));
 	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_TX_EN,               1));
 	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_TX_ON_CHIP_MOD,      1));
 	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_TX_UPS,              0));
-	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_TX_ON_CHIP_MOD_SP,   0));
-	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_TX_AMPLI_OUT_MAN_H,  1));
-	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_TX_AMPLI_OUT_MAN_L, 255));
+	RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_TX_ON_CHIP_MOD_SP,   1));
+	//RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_TX_AMPLI_OUT_MAN_H,  1));
+	//RETURN_ON_ERROR(lprf_write_subreg(lprf, SR_TX_AMPLI_OUT_MAN_L, 255));
 
 
 	/* STATE MASCHINE CONFIGURATION */

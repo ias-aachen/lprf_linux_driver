@@ -37,7 +37,7 @@
  */
 // #define LPRF_DEBUG_KRIT
 
-static const uint8_t SYNC_HEADER[] = {0x55, 0x55, 0x55, 0x55, 0xe5};
+static const uint8_t SYNC_HEADER[] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x55, 0x55, 0x55, 0x55, 0xe5};
 static const int PHY_HEADER_LENGTH = 1;
 
 /* This is the maximum length of a received IEEE frame including physical
@@ -54,7 +54,7 @@ static const int PHY_HEADER_LENGTH = 1;
 /**
  * Over the air data rate in kbps. Used to calculate RX counter length.
  */
-#define KBIT_RATE 2000
+#define KBIT_RATE 1000
 
 /**
  * Intervals for polling. The first value is in seconds and the second in
