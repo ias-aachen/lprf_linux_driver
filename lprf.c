@@ -48,9 +48,6 @@
 struct lprf_local;
 struct lprf_state_change;
 
-static const uint8_t SYNC_HEADER[] = {0x55, 0x55, 0x55, 0x55, 0xe5};
-static const int PHY_HEADER_LENGTH = 1;
-
 
 /***
  *      ____   _                       _
@@ -674,7 +671,9 @@ static int lprf_calculate_pll_values(uint32_t rf_frequency,
 		int *int_val, int *frac_val)
 {
 	uint32_t f_lo = 0;
+	int frac_correction = 0;
 
+	/*2.4 GHz Frontend*/
 	if (rf_frequency > 2000000000) {
 		f_lo = ( rf_frequency - if_frequency) / 3 * 2;
 		*int_val = f_lo  / 16000000;
@@ -687,7 +686,7 @@ static int lprf_calculate_pll_values(uint32_t rf_frequency,
 		 * modulo operation. (228/3479) is the smallest error
 		 * possible without integer overflow.
 		 */
-		*frac_val = (f_lo % 16000000) * 228 / 3479;
+		*frac_val = (f_lo % 16000000) * 228 / 3479 + frac_correction;
 		return 0;
 	}
 
@@ -774,9 +773,9 @@ static void lprf_tx_complete(struct lprf_local *lprf)
 {
 	struct sk_buff *skb_temp = lprf->tx_skb;
 	lprf->tx_skb = 0;
-	if (lprf->free_skb)
+	if (lprf->free_skb) /* Data from char driver */
 		kfree_skb(skb_temp);
-	else
+	else /* IEEE 802.15.4 data */
 		ieee802154_xmit_complete(lprf->hw, skb_temp, false);
 	lprf->free_skb = false;
 	lprf->state_change.tx_complete = false;
@@ -856,7 +855,7 @@ static int lprf_start_frame_write(struct lprf_local *lprf)
 		reverse_bit_order(&state_change->tx_buf[shr_index + i]);
 
 	state_change->spi_message.complete = __lprf_frame_write_complete;
-	state_change->spi_transfer.len = frame_length;
+	state_change->spi_transfer.len = frame_length + 2;
 
 	ret = spi_async(lprf->spi_device, &state_change->spi_message);
 	if (ret)
@@ -1829,7 +1828,8 @@ static int lprf_detect_device(struct lprf_local *lprf)
 	}
 
 
-	lprf->hw->flags = IEEE802154_HW_PROMISCUOUS;
+	lprf->hw->flags = IEEE802154_HW_PROMISCUOUS |
+			IEEE802154_HW_RX_DROP_BAD_CKSUM;
 
 	lprf->hw->phy->flags = WPAN_PHY_FLAG_TXPOWER;
 

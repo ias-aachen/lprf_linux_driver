@@ -37,12 +37,14 @@
  */
 // #define LPRF_DEBUG_KRIT
 
+static const uint8_t SYNC_HEADER[] = {0x55, 0x55, 0x55, 0x55, 0xe5};
+static const int PHY_HEADER_LENGTH = 1;
 
 /* This is the maximum length of a received IEEE frame including physical
  * synchronization information. 127bytes payload + 5 bytes synchronization
  * header + 1 byte physical header + 2 extra bytes just to be safe and get no
  * problems during post processing like shifting the received bytes. */
-#define FRAME_LENGTH 135
+#define FRAME_LENGTH (130 + sizeof(SYNC_HEADER))
 
 /**
  * Required size of the SPI buffers for frame reading and writing
