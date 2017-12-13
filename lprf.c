@@ -1476,7 +1476,7 @@ int lprf_open_char_device(struct inode *inode, struct file *filp)
 	}
 
 	ret = kfifo_alloc(&lprf_char_driver_interface.data_buffer,
-			2024, GFP_KERNEL);
+			2048, GFP_KERNEL);
 	if (ret)
 		return ret;
 
