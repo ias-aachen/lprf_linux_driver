@@ -27,7 +27,6 @@
 #include <linux/module.h>
 #include <linux/hrtimer.h>
 #include <linux/wait.h>
-#include <linux/mutex.h>
 #include <linux/gpio.h>
 #include <linux/fs.h>
 #include <linux/cdev.h>
@@ -98,7 +97,7 @@ struct lprf_phy_status {
  * @rx_buf: rx buffer for spi communication related to state changes
  * @tx_buf: tx buffer for spi communication related to state changes
  * @to_state: state to change to
- * @transistion_in_progress: variable used for synchronization to make sure
+ * @transition_in_progress: variable used for synchronization to make sure
  * 	to complete one state change before initiating another state change
  * @tx_complete: Used to detect when transmitting data finished and
  * 	ieee802154_xmit_complete() can be called.
@@ -810,7 +809,7 @@ static void __lprf_frame_write_complete(void *context)
 	struct lprf_local *lprf = context;
 	struct lprf_state_change *state_change = &lprf->state_change;
 
-	PRINT_KRIT("Spi Frame Write completed");
+	PRINT_KRIT("SPI Frame Write completed");
 
 	lprf_async_write_subreg(state_change, state_change->sm_main_value,
 			SR_SM_COMMAND, STATE_CMD_TX, lprf_tx_change_complete);
