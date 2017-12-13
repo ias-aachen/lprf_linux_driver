@@ -177,7 +177,7 @@ struct lprf_local {
  * This struct contains data needed for the char driver interface. The char
  * driver interface is actually not needed for normal chip operation but
  * only used for debugging purposes. This way user space applications are able
- * to read and write raw data to the chip without using the hole IEEE 802.15.4
+ * to read and write raw data to the chip without using the whole IEEE 802.15.4
  * stack.
  */
 struct lprf_char_driver_interface {
