@@ -351,8 +351,7 @@ static bool lprf_is_read_only_reg(unsigned int reg)
 static bool lprf_reg_readable(struct device *dev, unsigned int reg)
 {
 
-	return lprf_reg_writeable(dev, reg) ||
-			lprf_is_read_only_reg(reg);
+	return lprf_reg_writeable(dev, reg) || lprf_is_read_only_reg(reg);
 }
 
 /**
@@ -409,8 +408,7 @@ static const struct regmap_config lprf_regmap_spi_config = {
 };
 
 static void lprf_async_write_register(struct lprf_state_change *state_change,
-		uint8_t address, uint8_t value,
-		void (*complete)(void *context));
+		uint8_t address, uint8_t value, void (*complete)(void *context));
 static int lprf_phy_status_async(struct lprf_phy_status *phy_status);
 static inline void lprf_stop_polling(struct lprf_local *lprf);
 
@@ -483,8 +481,7 @@ static void lprf_async_write_register(struct lprf_state_change *state_change,
 	state_change->tx_buf[2] = value;
 	state_change->spi_transfer.len = 3;
 	state_change->spi_message.complete = complete;
-	ret = spi_async(state_change->lprf->spi_device,
-			&state_change->spi_message);
+	ret = spi_async(state_change->lprf->spi_device, &state_change->spi_message);
 	if (ret)
 		lprf_async_error(state_change->lprf, state_change, ret);
 }
@@ -666,8 +663,7 @@ static inline uint32_t calculate_rf_center_freq(int channel_number)
  * Returns zero on success or -EINVAL for invalid parameters.
  */
 static int lprf_calculate_pll_values(uint32_t rf_frequency,
-		uint32_t if_frequency,
-		int *int_val, int *frac_val)
+		uint32_t if_frequency, int *int_val, int *frac_val)
 {
 	uint32_t f_lo = 0;
 	int frac_correction = 0;
@@ -728,8 +724,7 @@ static inline void lprf_start_polling_timer(struct lprf_local *lprf,
 		ktime_t interval)
 {
 	if (atomic_read(&lprf->rx_polling_active))
-		hrtimer_start(&lprf->rx_polling_timer, interval,
-				HRTIMER_MODE_REL);
+		hrtimer_start(&lprf->rx_polling_timer, interval, HRTIMER_MODE_REL);
 }
 
 /**
@@ -831,9 +826,7 @@ static int lprf_start_frame_write(struct lprf_local *lprf)
 	struct lprf_state_change *state_change = &lprf->state_change;
 
 	payload_length = lprf->tx_skb->len;
-	frame_length = sizeof(SYNC_HEADER) +
-			PHY_HEADER_LENGTH +
-			payload_length;
+	frame_length = sizeof(SYNC_HEADER) + PHY_HEADER_LENGTH + payload_length;
 
 	shr_index = 2;
 	phr_index = shr_index + sizeof(SYNC_HEADER);
@@ -842,13 +835,12 @@ static int lprf_start_frame_write(struct lprf_local *lprf)
 	state_change->tx_buf[0] = FRMW;
 	state_change->tx_buf[1] = frame_length;
 
-	memcpy(state_change->tx_buf + shr_index,
-			SYNC_HEADER, sizeof(SYNC_HEADER));
+	memcpy(state_change->tx_buf + shr_index, SYNC_HEADER, sizeof(SYNC_HEADER));
 
 	state_change->tx_buf[phr_index] = payload_length;
 
-	memcpy(state_change->tx_buf + payload_index,
-			lprf->tx_skb->data, lprf->tx_skb->len);
+	memcpy(state_change->tx_buf + payload_index,lprf->tx_skb->data, 
+			lprf->tx_skb->len);
 
 	for(i = 0; i < frame_length; ++i)
 		reverse_bit_order(&state_change->tx_buf[shr_index + i]);
@@ -930,11 +922,9 @@ static int find_SFD_and_shift_data(uint8_t *data, int *data_length,
 		return -EFAULT;
 
 	no_shift = number_of_equal_bits(sfd, data[sfd_start_postion], 8);
-	one_bit_shift = number_of_equal_bits(sfd,
-				((data[sfd_start_postion] << 8) |
+	one_bit_shift = number_of_equal_bits(sfd, ((data[sfd_start_postion] << 8) |
 				data[sfd_start_postion+1]) >> 7, 8);
-	two_bit_shift = number_of_equal_bits(sfd,
-				((data[sfd_start_postion] << 8) |
+	two_bit_shift = number_of_equal_bits(sfd, ((data[sfd_start_postion] << 8) |
 				data[sfd_start_postion+1]) >> 6, 8);
 
 	if(no_shift < 7 && one_bit_shift < 7 && two_bit_shift < 7) {
@@ -1110,14 +1100,12 @@ static void lprf_rx_resets(void *context)
 		reset_counter++;
 		return;
 	case 2:
-		lprf_async_write_subreg(state_change,
-				state_change->dem_main_value,
+		lprf_async_write_subreg(state_change, state_change->dem_main_value,
 				SR_DEM_RESETB, 0, lprf_rx_resets);
 		reset_counter++;
 		return;
 	case 3:
-		lprf_async_write_subreg(state_change,
-				state_change->dem_main_value,
+		lprf_async_write_subreg(state_change, state_change->dem_main_value,
 				SR_DEM_RESETB, 1, lprf_rx_resets);
 		reset_counter++;
 		return;
@@ -1127,18 +1115,14 @@ static void lprf_rx_resets(void *context)
 			reset_counter = 0;
 		}
 		else {
-			lprf_async_write_subreg(state_change,
-					state_change->sm_main_value,
-					SR_SM_COMMAND, STATE_CMD_RX,
-					lprf_rx_resets);
+			lprf_async_write_subreg(state_change, state_change->sm_main_value,
+					SR_SM_COMMAND, STATE_CMD_RX, lprf_rx_resets);
 			reset_counter++;
 		}
 		return;
 	case 5:
-		lprf_async_write_subreg(state_change,
-				state_change->sm_main_value,
-				SR_SM_COMMAND, STATE_CMD_NONE,
-				lprf_rx_change_complete);
+		lprf_async_write_subreg(state_change, state_change->sm_main_value,
+				SR_SM_COMMAND, STATE_CMD_NONE, lprf_rx_change_complete);
 		reset_counter = 0;
 		return;
 	default:
@@ -1163,10 +1147,8 @@ static void lprf_async_state_change(struct lprf_local *lprf, uint8_t state)
 		lprf_rx_resets(lprf);
 		break;
 	case STATE_CMD_TX:
-		lprf_async_write_subreg(state_change,
-				state_change->sm_main_value,
-				SR_SM_COMMAND, STATE_CMD_SLEEP,
-				lprf_rx_resets);
+		lprf_async_write_subreg(state_change, state_change->sm_main_value,
+				SR_SM_COMMAND, STATE_CMD_SLEEP, lprf_rx_resets);
 		PRINT_KRIT("Changed state to sleep, will change to TX");
 		break;
 	default:
@@ -1206,8 +1188,7 @@ static void lprf_evaluate_phy_status(struct lprf_local *lprf,
 	 * Call ieee802154_xmit_complete() if tx transmission completed
 	 * successfully.
 	 */
-	if(PHY_SM_STATUS(phy_status) != PHY_SM_SENDING &&
-			state_change->tx_complete)
+	if(PHY_SM_STATUS(phy_status) != PHY_SM_SENDING && state_change->tx_complete)
 		lprf_tx_complete(lprf);
 
 	/* Read data from chip, if RX data is available */
@@ -1515,8 +1496,7 @@ ssize_t lprf_read_char_device(struct file *filp,
 		PRINT_KRIT("Read_char_device goes to sleep.");
 		ret = wait_event_interruptible(
 			lprf_char_driver_interface.wait_for_rx_data,
-			!kfifo_is_empty(
-				&lprf_char_driver_interface.data_buffer));
+			!kfifo_is_empty(&lprf_char_driver_interface.data_buffer));
 		if (ret < 0)
 			return ret;
 		PRINT_KRIT("Returned from sleep in read_char_device.");
@@ -1530,8 +1510,7 @@ ssize_t lprf_read_char_device(struct file *filp,
 	if(ret)
 		return ret;
 
-	PRINT_KRIT("%d/%d bytes copied to user.",
-			bytes_copied, buffer_length);
+	PRINT_KRIT("%d/%d bytes copied to user.", bytes_copied, buffer_length);
 
 	return bytes_copied;
 }
@@ -1647,8 +1626,7 @@ static int init_lprf_hardware(struct lprf_local *lprf)
 {
 	int ret = 0;
 	unsigned int value = 0;
-	int rx_counter_length =
-			get_rx_length_counter(KBIT_RATE, FRAME_LENGTH);
+	int rx_counter_length = get_rx_length_counter(KBIT_RATE, FRAME_LENGTH);
 
 	/* Reset all and load initial values */
 	RETURN_ON_ERROR(__lprf_write(lprf, RG_GLOBAL_RESETB,  0x00));
@@ -1797,8 +1775,7 @@ static int init_lprf_hardware(struct lprf_local *lprf)
 	lprf->state_change.dem_main_value = value;
 
 	/* Set PLL to correct RF channel */
-	lprf_set_ieee802154_channel(lprf->hw,
-			lprf->hw->phy->current_page,
+	lprf_set_ieee802154_channel(lprf->hw, lprf->hw->phy->current_page,
 			lprf->hw->phy->current_channel);
 
 	return 0;
@@ -1848,8 +1825,7 @@ static int lprf_detect_device(struct lprf_local *lprf)
 	lprf->hw->phy->cca_ed_level = 42;
 	lprf->hw->phy->transmit_power = 15;
 
-	dev_info(&lprf->spi_device->dev,"LPRF Chip found with Chip ID %X",
-			chip_id);
+	dev_info(&lprf->spi_device->dev,"LPRF Chip found with Chip ID %X", chip_id);
 	return 0;
 
 }
@@ -1859,8 +1835,7 @@ static int lprf_detect_device(struct lprf_local *lprf)
  */
 static void init_lprf_local(struct lprf_local *lprf, struct spi_device *spi)
 {
-	hrtimer_init(&lprf->rx_polling_timer, CLOCK_MONOTONIC,
-			HRTIMER_MODE_REL);
+	hrtimer_init(&lprf->rx_polling_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 	lprf->rx_polling_timer.function = lprf_start_poll;
 
 	lprf->spi_device = spi;
@@ -1897,8 +1872,7 @@ static void init_phy_status(struct lprf_phy_status *phy_status,
 	phy_status->spi_transfer.len = 1;
 	phy_status->spi_transfer.tx_buf = phy_status->tx_buf;
 	phy_status->spi_transfer.rx_buf = phy_status->rx_buf;
-	spi_message_add_tail(&phy_status->spi_transfer,
-			&phy_status->spi_message);
+	spi_message_add_tail(&phy_status->spi_transfer, &phy_status->spi_message);
 }
 
 /**
