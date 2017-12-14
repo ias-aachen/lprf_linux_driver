@@ -1922,9 +1922,8 @@ static int lprf_probe(struct spi_device *spi)
 	struct ieee802154_hw *hw = 0;
 	PRINT_DEBUG( "Call lprf_probe");
 
-	hw = ieee802154_alloc_hw(sizeof(*lprf),
-			&ieee802154_lprf_callbacks);
-	if( hw == 0)
+	hw = ieee802154_alloc_hw(sizeof(*lprf), &ieee802154_lprf_callbacks);
+	if(hw == 0)
 		return -ENOMEM;
 	PRINT_DEBUG("Successfully allocated ieee802154_hw structure");
 
